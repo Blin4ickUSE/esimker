@@ -10,6 +10,7 @@ import os
 import secrets
 import sys
 import time
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -232,6 +233,25 @@ def enforce_rate_limit(handler: BaseHTTPRequestHandler, *, user_key: str | None 
         STATE.rate_limiter.check(f"user:{user_key}")
 
 
+def parse_login_header_raw(raw: str) -> dict[str, Any]:
+    """Decode X-Telegram-Login-Data (plain JSON or b64: UTF-8 JSON)."""
+    text = raw.strip()
+    if not text:
+        raise AuthenticationError("invalid login data")
+    if text.startswith("b64:"):
+        try:
+            text = base64.b64decode(text[4:], validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise AuthenticationError("invalid login data") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AuthenticationError("invalid login data") from exc
+    if not isinstance(data, dict):
+        raise AuthenticationError("invalid login data")
+    return data
+
+
 def resolve_user(handler: BaseHTTPRequestHandler, *, ref: str | None = None) -> Any:
     init_data = handler.headers.get("X-Telegram-Init-Data", "").strip()
     bot_token = STATE.bot_token
@@ -261,12 +281,7 @@ def resolve_user(handler: BaseHTTPRequestHandler, *, ref: str | None = None) -> 
     if login_raw:
         if not bot_token:
             raise AuthenticationError("telegram auth is not configured")
-        try:
-            login_payload = json.loads(login_raw)
-        except json.JSONDecodeError as exc:
-            raise AuthenticationError("invalid login data") from exc
-        if not isinstance(login_payload, dict):
-            raise AuthenticationError("invalid login data")
+        login_payload = parse_login_header_raw(login_raw)
         tg_user = parse_telegram_login(
             login_payload,
             bot_token,

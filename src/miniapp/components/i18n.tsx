@@ -570,6 +570,14 @@ const emptyAccount: AccountState = {
   settings: { email: null, emailVerified: false, notifications: defaultNotifications() },
 };
 
+function encodeLoginHeader(login: TelegramLoginUser): string {
+  const json = JSON.stringify(login);
+  const bytes = new TextEncoder().encode(json);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `b64:${btoa(binary)}`;
+}
+
 function apiHeaders(): HeadersInit {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const initData = window.Telegram?.WebApp?.initData?.trim();
@@ -578,7 +586,7 @@ function apiHeaders(): HeadersInit {
   } else {
     const login = readStoredLogin();
     if (login) {
-      headers["X-Telegram-Login-Data"] = JSON.stringify(login);
+      headers["X-Telegram-Login-Data"] = encodeLoginHeader(login);
     }
   }
   return headers;
