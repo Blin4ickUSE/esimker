@@ -562,7 +562,6 @@ CREATE INDEX IF NOT EXISTS idx_referral_earnings_referrer ON referral_earnings(r
 CREATE INDEX IF NOT EXISTS idx_referral_relations_referrer ON referral_relations(referrer_id);
 CREATE INDEX IF NOT EXISTS idx_payment_intents_user ON payment_intents(user_id);
 CREATE INDEX IF NOT EXISTS idx_payment_intents_status ON payment_intents(status);
-CREATE INDEX IF NOT EXISTS idx_payment_intents_provider_ref ON payment_intents(provider_ref);
 
 CREATE TABLE IF NOT EXISTS popular_destinations (
     country_name TEXT PRIMARY KEY,
@@ -761,10 +760,10 @@ class Database:
                         conn.execute(
                             "ALTER TABLE payment_intents ADD COLUMN provider_ref TEXT"
                         )
-                        conn.execute(
-                            "CREATE INDEX IF NOT EXISTS idx_payment_intents_provider_ref "
-                            "ON payment_intents(provider_ref)"
-                        )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_payment_intents_provider_ref "
+                        "ON payment_intents(provider_ref)"
+                    )
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, isoformat()),
