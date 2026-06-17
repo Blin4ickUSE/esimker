@@ -88,11 +88,32 @@ sync_from_github() {
         return
     fi
 
+    # .env и data/ не в git — git clean их удаляет; сохраняем перед обновлением.
+    local backup_dir
+    backup_dir="$(mktemp -d)"
+    if [[ -f "$dir/.env" ]]; then
+        cp "$dir/.env" "$backup_dir/.env"
+    fi
+    if [[ -d "$dir/data" ]]; then
+        cp -a "$dir/data" "$backup_dir/data"
+    fi
+
     log_info "Загрузка последней версии с GitHub (${GIT_BRANCH})..."
     git -C "$dir" fetch origin "$GIT_BRANCH"
     git -C "$dir" checkout "$GIT_BRANCH"
     git -C "$dir" reset --hard "origin/${GIT_BRANCH}"
-    git -C "$dir" clean -fd
+
+    if [[ -f "$backup_dir/.env" ]]; then
+        cp "$backup_dir/.env" "$dir/.env"
+        chmod 600 "$dir/.env"
+    fi
+    if [[ -d "$backup_dir/data" ]]; then
+        mkdir -p "$dir/data"
+        cp -a "$backup_dir/data/." "$dir/data/"
+        chmod 755 "$dir/data"
+    fi
+    rm -rf "$backup_dir"
+
     log_success "  ✔ код обновлён ($(git -C "$dir" rev-parse --short HEAD))"
 }
 
@@ -586,6 +607,13 @@ print_summary() {
 
 run_update() {
     log_info "Режим обновления (найден ${NGINX_CONF})"
+
+    if [[ ! -f ".env" ]] || ! grep -q '^telegram_bot_token=.' .env 2>/dev/null; then
+        log_error ".env не найден или не содержит telegram_bot_token."
+        log_info "  Восстановите .env вручную: cp .env.example .env && nano .env"
+        log_info "  Или запустите полную установку: sudo rm ${NGINX_CONF} && curl … | sudo bash"
+        exit 1
+    fi
 
     local http_port="$DEFAULT_HTTP_PORT"
     local domain=""
