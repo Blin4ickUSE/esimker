@@ -1,0 +1,29 @@
+FROM node:20-alpine AS frontend
+
+WORKDIR /app
+
+COPY src/miniapp/package.json src/miniapp/package-lock.json ./src/miniapp/
+RUN cd src/miniapp && npm ci
+
+COPY src/miniapp ./src/miniapp
+COPY assets ./assets
+
+ARG VITE_TELEGRAM_BOT_USERNAME=
+ENV VITE_TELEGRAM_BOT_USERNAME=${VITE_TELEGRAM_BOT_USERNAME}
+
+WORKDIR /app/src/miniapp
+RUN npm run build
+
+
+FROM nginx:1.27-alpine
+
+COPY deploy/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf
+COPY --from=frontend /app/src/miniapp/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

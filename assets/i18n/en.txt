@@ -1,0 +1,136 @@
+# esimker UI strings — English
+# Format: key = value (one per line). Lines starting with # are ignored.
+# Country names are localized separately in assets/catalog.ts.
+
+brand            = esimker
+
+# Home
+balance          = Balance
+topUp            = Top up
+topUpSelect      = Choose amount
+topUpPay         = Continue to payment
+topUpLimit       = $1 to $1000
+buyEsim          = Buy eSIM
+buyEsimSub       = Internet in 180+ countries
+myEsims          = My eSIMs
+referral         = Referral program
+referralSub      = Invite friends — everyone wins
+referralEarned   = Total earned
+referralFriend   = For your friend
+referralFriendDesc = 10% off their first eSIM purchase
+referralYou      = For you
+referralYouDesc  = 10% from each of their purchases to your balance
+referralLink     = Your link
+referralCopy     = Copy
+referralCopied   = Copied
+promo            = Promo code
+promoPlaceholder = Enter code
+activate         = Activate
+promoOk          = Added to balance
+promoBad         = Invalid code
+promoUsed        = Code already used
+
+# Catalog
+searchPlaceholder = Search country or region
+popular           = Popular destinations
+regions           = Regions
+worldCountries    = Countries in package
+allCountries      = All countries
+results           = Results
+notFound          = Nothing found
+from              = from
+
+# Detail
+back          = Back
+esimOnly      = eSIM · data only
+onlyInternet  = Data only, no phone number
+activation180 = Activate within 180 days
+instant       = Connects right after payment
+dataVolume    = Data volume
+choosePlan    = Choose a plan
+planRegular   = Standard
+planUnlimited = Unlimited
+validity      = Validity
+days          = days
+pay           = Continue to payment
+unlimited     = Unlimited
+paidFromBalance = Paid from balance
+paidByCard      = Paid by card
+
+# My eSIMs
+myEsimsEmpty    = Your eSIMs will appear here
+myEsimsEmptyCta = Buy your first eSIM
+active          = Active
+expired         = Expired
+esimStatusInactive = Not active
+esimStatusLimit = Limit reached
+esimIccid       = ICCID
+esimPurchased   = Purchase date
+esimDataLeft    = Data remaining
+esimExpiresIn   = Valid for
+esimAfterInstall = After installation
+esimHours       = h
+esimInstallQr   = QR code for setup
+esimManualInstall = Manual setup
+esimSmdp        = SM-DP+ Address
+esimActivationCode = Activation Code
+esimNotes       = Important
+esimInstallIphone = Install on iPhone
+esimInstallAndroid = Install on Android
+esimCopy        = Copy
+esimNotFound    = eSIM not found
+esimNoteWifi    = Wi-Fi is required to install the eSIM
+esimNoteCountry = eSIM works only in the destination country
+esimNoteRoaming = If mobile data does not work, enable roaming and select this eSIM for cellular data
+esimNoteStatusDelay = eSIM status updates within 1 hour after you start using it
+esimNoteTrafficDelay = Remaining data updates every 30 minutes
+esimNoteNoTransfer = eSIM cannot be transferred to another device
+geoBlockedTitle = Access restricted
+geoBlockedBody  = Information for this destination is unavailable.
+
+# Settings
+settings              = Settings
+settingsEmail         = Email
+settingsEmailNone     = Link your email for receipts and notifications
+settingsEmailChange   = Change email
+settingsEmailUnlink   = Unlink
+settingsEmailPlaceholder = example@mail.com
+settingsEmailSendCode = Send code
+settingsEmailCodePlaceholder = Code from email
+settingsEmailConfirm  = Confirm
+settingsEmailSent     = Code sent (stub)
+settingsEmailOk       = Email linked
+settingsEmailInvalid  = Check email and code
+settingsEmailUnlinked = Email unlinked
+settingsNotifications = Notifications
+settingsNotifyNews  = News and promotions
+settingsNotifyMarketing = Marketing notifications
+settingsNotifyTraffic = Traffic usage alerts
+settingsLegal         = Other
+settingsTerms         = Terms of Service
+settingsPrivacy       = Privacy Policy
+settingsSupport       = Support
+
+# Payment
+payTitle        = Payment method
+payAmount       = Amount due
+paySbp          = SBP
+payCardRu       = Russian cards
+payCardIntl     = International cards
+payCrypto       = Cryptocurrency
+payCryptobot    = CryptoBot
+payCryptoTon    = TON network
+payCryptoTrc20  = TRC-20 network
+payInvalid      = Invalid payment details
+
+# Auth
+authTitle       = Sign in
+authSub         = Sign in with Telegram to top up and buy eSIMs
+authOpenBot     = Open bot in Telegram
+authBotMissing  = Could not load the login widget. Open the app via the bot.
+authLoading     = Loading…
+
+# Bot
+bot.startWelcome = Welcome, {name}
+bot.startBody    = <b>Need internet abroad?</b> eSIMKER sells travel eSIMs with no phone number. Stay connected anywhere in the world.
+bot.launchMiniApp = Launch mini app

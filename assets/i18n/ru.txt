@@ -1,0 +1,136 @@
+# esimker UI strings — Russian
+# Format: key = value (one per line). Lines starting with # are ignored.
+# Country names are localized separately in assets/catalog.ts.
+
+brand            = esimker
+
+# Home
+balance          = Баланс
+topUp            = Пополнить
+topUpSelect      = Выберите сумму
+topUpPay         = Перейти к оплате
+topUpLimit       = от $1 до $1000
+buyEsim          = Купить eSIM
+buyEsimSub       = Интернет в 180+ странах
+myEsims          = Мои eSIM
+referral         = Реферальная система
+referralSub      = Приглашайте друзей — выгода обоим
+referralEarned   = Всего заработано
+referralFriend   = Приглашённому
+referralFriendDesc = 10% скидка на первую покупку eSIM
+referralYou      = Вам
+referralYouDesc  = 10% с каждой покупки приглашённого на баланс
+referralLink     = Ваша ссылка
+referralCopy     = Копировать
+referralCopied   = Скопировано
+promo            = Промокод
+promoPlaceholder = Введите код
+activate         = Активировать
+promoOk          = Зачислено на баланс
+promoBad         = Код недействителен
+promoUsed        = Код уже использован
+
+# Catalog
+searchPlaceholder = Поиск страны или региона
+popular           = Популярные направления
+regions           = Регионы
+worldCountries    = Страны в пакете
+allCountries      = Все страны
+results           = Результаты
+notFound          = Ничего не найдено
+from              = от
+
+# Detail
+back          = Назад
+esimOnly      = eSIM · только интернет
+onlyInternet  = Только интернет, без номера телефона
+activation180 = Активация в течение 180 дней
+instant       = Подключение сразу после оплаты
+dataVolume    = Объём трафика
+choosePlan    = Выберите тариф
+planRegular   = Обычные
+planUnlimited = Безлимит
+validity      = Срок действия
+days          = дней
+pay           = Перейти к оплате
+unlimited     = Безлимит
+paidFromBalance = Списано с баланса
+paidByCard      = Оплачено картой
+
+# My eSIMs
+myEsimsEmpty    = Здесь появятся ваши eSIM
+myEsimsEmptyCta = Купить первую eSIM
+active          = Активна
+expired         = Истекла
+esimStatusInactive = Не активна
+esimStatusLimit = Лимит
+esimIccid       = ICCID
+esimPurchased   = Дата покупки
+esimDataLeft    = Остаток трафика
+esimExpiresIn   = Срок действия
+esimAfterInstall = После установки
+esimHours       = ч
+esimInstallQr   = QR для установки
+esimManualInstall = Ручная установка
+esimSmdp        = SM-DP+ Address
+esimActivationCode = Activation Code
+esimNotes       = Важно
+esimInstallIphone = Установить на iPhone
+esimInstallAndroid = Установить на Android
+esimCopy        = Копировать
+esimNotFound    = eSIM не найдена
+esimNoteWifi    = Для установки eSIM необходим Wi-Fi
+esimNoteCountry = eSIM работает только в стране назначения
+esimNoteRoaming = Если интернет от eSIM не работает, включите роуминг и выберите eSIM для сотовых данных
+esimNoteStatusDelay = Статус eSIM обновится через 1 час после начала использования
+esimNoteTrafficDelay = Данные об остатке трафика будут обновляться каждые 30 мин
+esimNoteNoTransfer = Перенос eSIM в другое устройство невозможен
+geoBlockedTitle = Доступ ограничен
+geoBlockedBody  = Выдача информации по этому направлению отказана по требованию правоохранительных органов.
+
+# Settings
+settings              = Настройки
+settingsEmail         = Почта
+settingsEmailNone     = Привяжите почту для чеков и уведомлений
+settingsEmailChange   = Изменить почту
+settingsEmailUnlink   = Отвязать
+settingsEmailPlaceholder = example@mail.com
+settingsEmailSendCode = Отправить код
+settingsEmailCodePlaceholder = Код из письма
+settingsEmailConfirm  = Подтвердить
+settingsEmailSent     = Код отправлен (заглушка)
+settingsEmailOk       = Почта привязана
+settingsEmailInvalid  = Неверная почта
+settingsEmailUnlinked = Почта отвязана
+settingsNotifications = Уведомления
+settingsNotifyNews  = Новости и акции
+settingsNotifyMarketing = Маркетинговые уведомления
+settingsNotifyTraffic = Предупреждение о трафике
+settingsLegal         = Прочее
+settingsTerms         = Договор оферты
+settingsPrivacy       = Политика конфиденциальности
+settingsSupport       = Поддержка
+
+# Payment
+payTitle        = Способ оплаты
+payAmount       = К оплате
+paySbp          = СБП
+payCardRu       = Российские карты
+payCardIntl     = Иностранные карты
+payCrypto       = Криптовалюта
+payCryptobot    = CryptoBot
+payCryptoTon    = Сеть TON
+payCryptoTrc20  = Сеть TRC-20
+payInvalid      = Некорректные данные оплаты
+
+# Auth
+authTitle       = Войти
+authSub         = Войдите через Telegram, чтобы пополнять баланс и покупать eSIM
+authOpenBot     = Открыть бота в Telegram
+authBotMissing  = Не удалось загрузить виджет. Откройте приложение через бота.
+authLoading     = Загрузка…
+
+# Bot
+bot.startWelcome = Добро пожаловать, {name}
+bot.startBody    = <b>Нужен интернет за границей?</b> eSIMKER — это сервис продажи eSIM без номера для путешествий. Будьте на связи в любой точке мира.
+bot.launchMiniApp = Запустить мини-приложение
