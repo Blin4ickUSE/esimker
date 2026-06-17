@@ -105,25 +105,37 @@ restore_runtime_backup() {
 }
 
 nginx_read_domain() {
-    [[ -f "$NGINX_CONF" ]] || return 0
-    grep -E '^\s*server_name ' "$NGINX_CONF" | head -n1 | awk '{print $2}' | tr -d ';'
+    local domain=""
+    if [[ -f "$NGINX_CONF" ]]; then
+        domain="$(grep -E 'server_name ' "$NGINX_CONF" 2>/dev/null | grep -v '_' | head -n1 | awk '{print $2}' | tr -d ';' || true)"
+    fi
+    echo "$domain"
 }
 
 nginx_read_ssl_port() {
-    [[ -f "$NGINX_CONF" ]] || return 0
-    grep -E '^\s*listen .* ssl' "$NGINX_CONF" | head -n1 | awk '{print $2}' | tr -d ';'
+    local port=""
+    if [[ -f "$NGINX_CONF" ]]; then
+        port="$(grep -E 'listen .* ssl' "$NGINX_CONF" 2>/dev/null | head -n1 | awk '{print $2}' | tr -d ';' || true)"
+    fi
+    echo "$port"
 }
 
 nginx_read_http_port() {
-    [[ -f "$NGINX_CONF" ]] || return 0
-    grep -E '127\.0\.0\.1:[0-9]+' "$NGINX_CONF" | head -n1 | grep -oE '[0-9]+$'
+    local port=""
+    if [[ -f "$NGINX_CONF" ]]; then
+        port="$(grep -E '127\.0\.0\.1:[0-9]+' "$NGINX_CONF" 2>/dev/null | head -n1 | grep -oE '[0-9]+$' || true)"
+    fi
+    echo "$port"
 }
 
 certbot_email_for_domain() {
     local domain="$1"
     local conf="/etc/letsencrypt/renewal/${domain}.conf"
-    [[ -f "$conf" ]] || return 1
-    grep -m1 '^account = ' "$conf" | sed 's/.*mailto:\([^]]*\).*/\1/'
+    local email=""
+    if [[ -f "$conf" ]]; then
+        email="$(grep -m1 '^account = ' "$conf" 2>/dev/null | sed 's/.*mailto:\([^]]*\).*/\1/' || true)"
+    fi
+    echo "$email"
 }
 
 ensure_env_for_update() {
@@ -151,7 +163,7 @@ ensure_env_for_update() {
     fi
 
     log_warn ".env отсутствует — создайте заново (нужен токен бота из @BotFather)"
-    email="$(certbot_email_for_domain "$domain" 2>/dev/null || true)"
+    email="$(certbot_email_for_domain "$domain")"
     if [[ -z "$email" ]]; then
         prompt "  Email (Let's Encrypt): " email
     fi
