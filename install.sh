@@ -72,6 +72,97 @@ bootstrap_git() {
     exit 1
 }
 
+RUNTIME_BACKUP_DIR="/var/lib/esimker"
+
+save_runtime_backup() {
+    local dir="$1"
+    mkdir -p "$RUNTIME_BACKUP_DIR"
+    if [[ -f "$dir/.env" ]]; then
+        cp "$dir/.env" "$RUNTIME_BACKUP_DIR/.env"
+        chmod 600 "$RUNTIME_BACKUP_DIR/.env"
+    fi
+    if [[ -d "$dir/data" ]] && [[ -n "$(ls -A "$dir/data" 2>/dev/null || true)" ]]; then
+        rm -rf "$RUNTIME_BACKUP_DIR/data"
+        cp -a "$dir/data" "$RUNTIME_BACKUP_DIR/data"
+    fi
+}
+
+restore_runtime_backup() {
+    local dir="$1"
+    if [[ ! -f "$dir/.env" && -f "$RUNTIME_BACKUP_DIR/.env" ]]; then
+        cp "$RUNTIME_BACKUP_DIR/.env" "$dir/.env"
+        chmod 600 "$dir/.env"
+        log_success "  ✔ .env восстановлен из ${RUNTIME_BACKUP_DIR}/"
+    fi
+    if [[ -d "$RUNTIME_BACKUP_DIR/data" ]]; then
+        if [[ ! -d "$dir/data" ]] || [[ -z "$(ls -A "$dir/data" 2>/dev/null || true)" ]]; then
+            mkdir -p "$dir/data"
+            cp -a "$RUNTIME_BACKUP_DIR/data/." "$dir/data/"
+            chmod 755 "$dir/data"
+            log_success "  ✔ data/ восстановлена из ${RUNTIME_BACKUP_DIR}/"
+        fi
+    fi
+}
+
+nginx_read_domain() {
+    [[ -f "$NGINX_CONF" ]] || return 0
+    grep -E '^\s*server_name ' "$NGINX_CONF" | head -n1 | awk '{print $2}' | tr -d ';'
+}
+
+nginx_read_ssl_port() {
+    [[ -f "$NGINX_CONF" ]] || return 0
+    grep -E '^\s*listen .* ssl' "$NGINX_CONF" | head -n1 | awk '{print $2}' | tr -d ';'
+}
+
+nginx_read_http_port() {
+    [[ -f "$NGINX_CONF" ]] || return 0
+    grep -E '127\.0\.0\.1:[0-9]+' "$NGINX_CONF" | head -n1 | grep -oE '[0-9]+$'
+}
+
+certbot_email_for_domain() {
+    local domain="$1"
+    local conf="/etc/letsencrypt/renewal/${domain}.conf"
+    [[ -f "$conf" ]] || return 1
+    grep -m1 '^account = ' "$conf" | sed 's/.*mailto:\([^]]*\).*/\1/'
+}
+
+ensure_env_for_update() {
+    if [[ -f ".env" ]] && grep -q '^telegram_bot_token=.' .env 2>/dev/null; then
+        save_runtime_backup "$(pwd)"
+        return
+    fi
+
+    restore_runtime_backup "$(pwd)"
+    if [[ -f ".env" ]] && grep -q '^telegram_bot_token=.' .env 2>/dev/null; then
+        return
+    fi
+
+    local domain ssl_port http_port email
+    domain="$(nginx_read_domain)"
+    ssl_port="$(nginx_read_ssl_port)"
+    http_port="$(nginx_read_http_port)"
+    ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
+    http_port="${http_port:-$DEFAULT_HTTP_PORT}"
+
+    if [[ -z "$domain" ]]; then
+        log_error ".env не найден и домен не определён из ${NGINX_CONF}."
+        log_info "  cp .env.example .env && nano .env"
+        exit 1
+    fi
+
+    log_warn ".env отсутствует — создайте заново (нужен токен бота из @BotFather)"
+    email="$(certbot_email_for_domain "$domain" 2>/dev/null || true)"
+    if [[ -z "$email" ]]; then
+        prompt "  Email (Let's Encrypt): " email
+    fi
+    if [[ -z "$email" ]]; then
+        email="admin@${domain}"
+    fi
+
+    create_env_file "$domain" "$email" "$ssl_port" "$http_port"
+    save_runtime_backup "$(pwd)"
+}
+
 sync_from_github() {
     local dir="$1"
     bootstrap_git
@@ -88,7 +179,9 @@ sync_from_github() {
         return
     fi
 
-    # .env и data/ не в git — git clean их удаляет; сохраняем перед обновлением.
+    # Сохраняем .env и data/ — они не в git; reset/clean их не трогает, но clean на старых версиях удалял.
+    save_runtime_backup "$dir"
+
     local backup_dir
     backup_dir="$(mktemp -d)"
     if [[ -f "$dir/.env" ]]; then
@@ -101,7 +194,9 @@ sync_from_github() {
     log_info "Загрузка последней версии с GitHub (${GIT_BRANCH})..."
     git -C "$dir" fetch origin "$GIT_BRANCH"
     git -C "$dir" checkout "$GIT_BRANCH"
-    git -C "$dir" reset --hard "origin/${GIT_BRANCH}"
+    if ! git -C "$dir" merge --ff-only "origin/${GIT_BRANCH}" 2>/dev/null; then
+        git -C "$dir" reset --hard "origin/${GIT_BRANCH}"
+    fi
 
     if [[ -f "$backup_dir/.env" ]]; then
         cp "$backup_dir/.env" "$dir/.env"
@@ -113,6 +208,9 @@ sync_from_github() {
         chmod 755 "$dir/data"
     fi
     rm -rf "$backup_dir"
+
+    restore_runtime_backup "$dir"
+    save_runtime_backup "$dir"
 
     log_success "  ✔ код обновлён ($(git -C "$dir" rev-parse --short HEAD))"
 }
@@ -544,6 +642,7 @@ EOF
 
     chmod 600 .env
     log_success "  ✔ .env создан"
+    save_runtime_backup "$(pwd)"
 }
 
 start_containers() {
@@ -608,12 +707,7 @@ print_summary() {
 run_update() {
     log_info "Режим обновления (найден ${NGINX_CONF})"
 
-    if [[ ! -f ".env" ]] || ! grep -q '^telegram_bot_token=.' .env 2>/dev/null; then
-        log_error ".env не найден или не содержит telegram_bot_token."
-        log_info "  Восстановите .env вручную: cp .env.example .env && nano .env"
-        log_info "  Или запустите полную установку: sudo rm ${NGINX_CONF} && curl … | sudo bash"
-        exit 1
-    fi
+    ensure_env_for_update
 
     local http_port="$DEFAULT_HTTP_PORT"
     local domain=""
