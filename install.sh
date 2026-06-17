@@ -4,6 +4,8 @@ set -Eeuo pipefail
 PROJECT_NAME="esimker"
 NGINX_CONF="/etc/nginx/sites-available/${PROJECT_NAME}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${PROJECT_NAME}.conf"
+NGINX_WEBHOOK_CONF="/etc/nginx/sites-available/${PROJECT_NAME}-webhook.conf"
+NGINX_WEBHOOK_LINK="/etc/nginx/sites-enabled/${PROJECT_NAME}-webhook.conf"
 CERTBOT_WEBROOT="/var/www/certbot"
 DEFAULT_HTTP_PORT=8080
 DEFAULT_SSL_PORT=443
@@ -138,60 +140,208 @@ certbot_email_for_domain() {
     echo "$email"
 }
 
-ensure_env_for_update() {
-    if [[ -f ".env" ]] && grep -q '^telegram_bot_token=.' .env 2>/dev/null; then
-        save_runtime_backup "$(pwd)"
-        return
+env_get() {
+    local key="$1"
+    [[ -f ".env" ]] || return 1
+    grep -m1 "^${key}=" .env 2>/dev/null | cut -d= -f2- | tr -d '\r'
+}
+
+env_is_set() {
+    local val
+    val="$(env_get "$1" 2>/dev/null || true)"
+    [[ -n "${val// /}" ]]
+}
+
+env_set() {
+    local key="$1"
+    local value="$2"
+    local tmp
+    tmp="$(mktemp)"
+    if [[ -f ".env" ]]; then
+        grep -v "^${key}=" .env >"$tmp" 2>/dev/null || true
+    else
+        : >"$tmp"
     fi
+    printf '%s=%s\n' "$key" "$value" >>"$tmp"
+    mv "$tmp" .env
+    chmod 600 .env
+}
+
+env_set_default() {
+    env_is_set "$1" || env_set "$1" "$2"
+}
+
+ensure_env_file() {
+    log_info "\nПроверка .env"
 
     restore_runtime_backup "$(pwd)"
-    if [[ -f ".env" ]] && grep -q '^telegram_bot_token=.' .env 2>/dev/null; then
-        return
+
+    if [[ ! -f ".env" ]]; then
+        if [[ -f ".env.example" ]]; then
+            cp .env.example .env
+        else
+            touch .env
+        fi
+        chmod 600 .env
+        log_warn "  .env создан — заполните недостающие поля"
     fi
 
-    log_warn "\n.env не найден — введите параметры заново"
+    local domain webhook_domain email ssl_port http_port
+    local bot_token bot_username platega_mid platega_sec dent_id dent_secret
+    local domain_input webhook_input email_input ssl_input http_input rate_input
 
-    local domain ssl_port http_port email
-    local domain_input ssl_input http_input email_input
-
-    domain="$(nginx_read_domain)"
-    ssl_port="$(nginx_read_ssl_port)"
-    http_port="$(nginx_read_http_port)"
-    ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
+    domain="${INSTALL_DOMAIN:-$(env_get DOMAIN 2>/dev/null || true)}"
+    webhook_domain="${INSTALL_WEBHOOK_DOMAIN:-$(env_get PLATEGA_WEBHOOK_DOMAIN 2>/dev/null || true)}"
+    email="${INSTALL_SSL_EMAIL:-$(env_get SSL_EMAIL 2>/dev/null || true)}"
+    ssl_port="${INSTALL_SSL_PORT:-$DEFAULT_SSL_PORT}"
+    http_port="${INSTALL_HTTP_PORT:-$(env_get HTTP_PORT 2>/dev/null || true)}"
     http_port="${http_port:-$DEFAULT_HTTP_PORT}"
 
-    if [[ -n "$domain" ]]; then
-        prompt "  Домен [${domain}]: " domain_input
-        domain="$(sanitize_domain "${domain_input:-$domain}")"
+    if ! env_is_set telegram_bot_token; then
+        section "Telegram-бот"
+        prompt_secret "  Токен бота (telegram_bot_token): " bot_token
+        if [[ -z "$bot_token" ]]; then
+            log_error "telegram_bot_token обязателен."
+            exit 1
+        fi
+        env_set telegram_bot_token "$bot_token"
     else
-        prompt "  Домен (app.example.com): " domain_input
-        domain="$(sanitize_domain "$domain_input")"
-    fi
-    if [[ -z "$domain" ]]; then
-        log_error "Домен обязателен."
-        exit 1
+        log_success "  ✔ telegram_bot_token"
     fi
 
-    email="$(certbot_email_for_domain "$domain")"
-    if [[ -n "$email" ]]; then
-        prompt "  Email [${email}]: " email_input
-        email="${email_input:-$email}"
+    if ! env_is_set telegram_bot_username; then
+        prompt "  Username бота без @: " bot_username_input
+        bot_username="$(sanitize_bot_username "$bot_username_input")"
+        if [[ -z "$bot_username" ]]; then
+            log_error "telegram_bot_username обязателен."
+            exit 1
+        fi
+        env_set telegram_bot_username "$bot_username"
     else
-        prompt "  Email (Let's Encrypt): " email
-    fi
-    if [[ -z "$email" ]]; then
-        email="admin@${domain}"
+        log_success "  ✔ telegram_bot_username"
+        bot_username="$(env_get telegram_bot_username)"
     fi
 
-    prompt "  SSL-порт [${ssl_port}]: " ssl_input
-    ssl_port="${ssl_input:-$ssl_port}"
+    if ! env_is_set DOMAIN; then
+        if [[ -n "$domain" ]]; then
+            prompt "  Домен приложения [${domain}]: " domain_input
+            domain="$(sanitize_domain "${domain_input:-$domain}")"
+        else
+            domain="$(nginx_read_domain)"
+            if [[ -n "$domain" ]]; then
+                prompt "  Домен приложения [${domain}]: " domain_input
+                domain="$(sanitize_domain "${domain_input:-$domain}")"
+            else
+                prompt "  Домен приложения (app.example.com): " domain_input
+                domain="$(sanitize_domain "$domain_input")"
+            fi
+        fi
+        if [[ -z "$domain" ]]; then
+            log_error "DOMAIN обязателен."
+            exit 1
+        fi
+        env_set DOMAIN "$domain"
+    else
+        log_success "  ✔ DOMAIN"
+        domain="$(env_get DOMAIN)"
+    fi
 
-    prompt "  Docker web-порт [${http_port}]: " http_input
-    http_port="${http_input:-$http_port}"
-    HTTP_PORT="$http_port"
+    if ! env_is_set PLATEGA_WEBHOOK_DOMAIN; then
+        section "Platega — webhook-домен"
+        hint "Отдельный поддомен для callback (например pay.example.com)"
+        if [[ -n "$webhook_domain" ]]; then
+            prompt "  Домен webhook [${webhook_domain}]: " webhook_input
+            webhook_domain="$(sanitize_domain "${webhook_input:-$webhook_domain}")"
+        else
+            prompt "  Домен webhook (pay.example.com): " webhook_input
+            webhook_domain="$(sanitize_domain "$webhook_input")"
+        fi
+        if [[ -z "$webhook_domain" ]]; then
+            log_error "PLATEGA_WEBHOOK_DOMAIN обязателен."
+            exit 1
+        fi
+        env_set PLATEGA_WEBHOOK_DOMAIN "$webhook_domain"
+    else
+        log_success "  ✔ PLATEGA_WEBHOOK_DOMAIN"
+        webhook_domain="$(env_get PLATEGA_WEBHOOK_DOMAIN)"
+    fi
 
-    create_env_file "$domain" "$email" "$ssl_port" "$http_port"
+    if ! env_is_set platega_merchant_id || ! env_is_set platega_secret; then
+        section "Platega — API"
+        hint "Личный кабинет → Merchant ID и Secret Key"
+    fi
+    if ! env_is_set platega_merchant_id; then
+        prompt "  platega_merchant_id: " platega_mid
+        if [[ -z "$platega_mid" ]]; then
+            log_error "platega_merchant_id обязателен."
+            exit 1
+        fi
+        env_set platega_merchant_id "$platega_mid"
+    else
+        log_success "  ✔ platega_merchant_id"
+    fi
+    if ! env_is_set platega_secret; then
+        prompt_secret "  platega_secret: " platega_sec
+        if [[ -z "$platega_sec" ]]; then
+            log_error "platega_secret обязателен."
+            exit 1
+        fi
+        env_set platega_secret "$platega_sec"
+    else
+        log_success "  ✔ platega_secret"
+    fi
+    if ! env_is_set PLATEGA_USD_RUB_RATE; then
+        prompt "  Курс USD→RUB [95]: " rate_input
+        env_set PLATEGA_USD_RUB_RATE "${rate_input:-95}"
+    else
+        log_success "  ✔ PLATEGA_USD_RUB_RATE"
+    fi
+
+    if ! env_is_set SSL_EMAIL; then
+        email="${email:-$(certbot_email_for_domain "$domain" 2>/dev/null || true)}"
+        if [[ -n "$email" ]]; then
+            prompt "  Email Let's Encrypt [${email}]: " email_input
+            email="${email_input:-$email}"
+        else
+            prompt "  Email Let's Encrypt: " email
+        fi
+        email="${email:-admin@${domain}}"
+        env_set SSL_EMAIL "$email"
+    else
+        log_success "  ✔ SSL_EMAIL"
+    fi
+
+    if ! env_is_set MINIAPP_URL; then
+        env_set MINIAPP_URL "$(url_with_port "$domain" "$ssl_port")"
+    fi
+
+    env_set_default ENVIRONMENT production
+    env_set_default DB_PATH data/data.db
+    env_set_default API_HOST 0.0.0.0
+    env_set_default API_PORT 8000
+    env_set_default INIT_DATA_MAX_AGE_SECONDS 86400
+    env_set_default API_RATE_LIMIT_PER_MINUTE 120
+
+    if ! env_is_set HTTP_PORT; then
+        env_set HTTP_PORT "$http_port"
+    fi
+    HTTP_PORT="$(env_get HTTP_PORT)"
+
+    if ! env_is_set VITE_TELEGRAM_BOT_USERNAME; then
+        env_set VITE_TELEGRAM_BOT_USERNAME "${bot_username:-$(env_get telegram_bot_username)}"
+    fi
+
+    if ! grep -q '^dent_client_id=' .env 2>/dev/null; then
+        section "DENT Giga Store (опционально)"
+        hint "Enter — пропустить"
+        prompt "  dent_client_id: " dent_id
+        env_set dent_client_id "${dent_id:-}"
+        prompt "  dent_client_secret: " dent_secret
+        env_set dent_client_secret "${dent_secret:-}"
+    fi
+
     save_runtime_backup "$(pwd)"
+    log_success "  ✔ .env готов"
 }
 
 sync_from_github() {
@@ -540,6 +690,92 @@ EOF
     log_success "  ✔ Nginx настроен"
 }
 
+write_webhook_nginx_config() {
+    local webhook_domain="$1"
+    local ssl_port="$2"
+    local http_port="$3"
+
+    log_info "\nNginx webhook Platega → 127.0.0.1:${http_port} (${webhook_domain})"
+
+    local https_redirect
+    if [[ "$ssl_port" == "443" ]]; then
+        https_redirect='return 301 https://$host$request_uri;'
+    else
+        https_redirect="return 301 https://\$host:${ssl_port}\$request_uri;"
+    fi
+
+    sudo tee "$NGINX_WEBHOOK_CONF" >/dev/null <<EOF
+# ${PROJECT_NAME} Platega webhooks — generated by install.sh
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${webhook_domain};
+
+    location /.well-known/acme-challenge/ {
+        root ${CERTBOT_WEBROOT};
+    }
+
+    location / {
+        ${https_redirect}
+    }
+}
+
+server {
+    listen ${ssl_port} ssl http2;
+    listen [::]:${ssl_port} ssl http2;
+    server_name ${webhook_domain};
+
+    ssl_certificate /etc/letsencrypt/live/${webhook_domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${webhook_domain}/privkey.pem;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 1m;
+
+    location /api/webhooks/platega {
+        proxy_pass http://127.0.0.1:${http_port};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Connection "";
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 15s;
+    }
+
+    location / {
+        return 404;
+    }
+}
+EOF
+
+    sudo ln -sf "$NGINX_WEBHOOK_CONF" "$NGINX_WEBHOOK_LINK"
+    sudo nginx -t
+    sudo systemctl reload nginx
+    log_success "  ✔ Nginx webhook настроен"
+}
+
+ensure_webhook_infrastructure() {
+    local webhook_domain http_port ssl_port email
+
+    webhook_domain="$(env_get PLATEGA_WEBHOOK_DOMAIN 2>/dev/null || true)"
+    [[ -n "$webhook_domain" ]] || return 0
+
+    http_port="$(env_get HTTP_PORT 2>/dev/null || true)"
+    http_port="${http_port:-$DEFAULT_HTTP_PORT}"
+
+    ssl_port="$(nginx_read_ssl_port 2>/dev/null || true)"
+    ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
+
+    email="$(env_get SSL_EMAIL 2>/dev/null || true)"
+    email="${email:-admin@${webhook_domain}}"
+
+    issue_certificates "$webhook_domain" "$email"
+    write_webhook_nginx_config "$webhook_domain" "$ssl_port" "$http_port"
+}
+
 issue_certificates() {
     local domain="$1"
     local email="$2"
@@ -553,7 +789,12 @@ issue_certificates() {
 
     log_info "  Получение сертификата Let's Encrypt для ${domain}..."
 
-    local temp_conf="/tmp/${PROJECT_NAME}_certbot.conf"
+    local temp_conf="/tmp/${PROJECT_NAME}_certbot_${domain}.conf"
+    local restore_link=""
+    if [[ -L "$NGINX_LINK" ]]; then
+        restore_link="$(readlink -f "$NGINX_LINK" 2>/dev/null || readlink "$NGINX_LINK" 2>/dev/null || true)"
+    fi
+
     sudo tee "$temp_conf" >/dev/null <<EOF
 server {
     listen 80;
@@ -579,101 +820,12 @@ EOF
         --non-interactive
 
     sudo rm -f "$temp_conf"
+    if [[ -n "$restore_link" && -f "$restore_link" ]]; then
+        sudo ln -sf "$restore_link" "$NGINX_LINK"
+        sudo nginx -t && sudo systemctl reload nginx
+    fi
+
     log_success "  ✔ Сертификат получен"
-}
-
-create_env_file() {
-    local domain="$1"
-    local email="$2"
-    local ssl_port="$3"
-    local http_port="$4"
-
-    local miniapp_url
-    miniapp_url="$(url_with_port "$domain" "$ssl_port")"
-
-    log_info "\nНастройка .env"
-
-    local bot_token bot_username dent_id dent_secret
-
-    if [[ -f ".env" ]] && grep -q '^telegram_bot_token=.' .env 2>/dev/null; then
-        log_warn "  Найден существующий .env"
-        if confirm "  Перезаписать .env полностью? (y/n): "; then
-            :
-        else
-            # Обновить только URL/порты, остальное оставить
-            if grep -q '^MINIAPP_URL=' .env; then
-                sed -i "s|^MINIAPP_URL=.*|MINIAPP_URL=${miniapp_url}|" .env
-            else
-                echo "MINIAPP_URL=${miniapp_url}" >> .env
-            fi
-            if grep -q '^HTTP_PORT=' .env; then
-                sed -i "s|^HTTP_PORT=.*|HTTP_PORT=${http_port}|" .env
-            else
-                echo "HTTP_PORT=${http_port}" >> .env
-            fi
-            if grep -q '^ENVIRONMENT=' .env; then
-                sed -i "s|^ENVIRONMENT=.*|ENVIRONMENT=production|" .env
-            else
-                echo "ENVIRONMENT=production" >> .env
-            fi
-            chmod 600 .env 2>/dev/null || true
-            log_success "  ✔ .env обновлён (MINIAPP_URL, HTTP_PORT, ENVIRONMENT)"
-            return
-        fi
-    fi
-
-    section "Telegram-бот"
-    prompt_secret "  Токен бота (telegram_bot_token): " bot_token
-    prompt "  Username бота без @ (esimker_bot): " bot_username_input
-    bot_username="$(sanitize_bot_username "$bot_username_input")"
-
-    if [[ -z "$bot_token" || -z "$bot_username" ]]; then
-        log_error "Токен и username бота обязательны."
-        exit 1
-    fi
-
-    section "DENT Giga Store (опционально)"
-    hint "Оставьте пустым, если провайдер eSIM ещё не подключён"
-    prompt "  dent_client_id: " dent_id
-    prompt "  dent_client_secret: " dent_secret
-
-    cat > .env <<EOF
-# Telegram
-telegram_bot_token=${bot_token}
-telegram_bot_username=${bot_username}
-
-# Public URL (HTTPS)
-MINIAPP_URL=${miniapp_url}
-DOMAIN=${domain}
-SSL_EMAIL=${email}
-
-# Runtime
-ENVIRONMENT=production
-
-# DENT Giga Store (optional)
-dent_client_id=${dent_id}
-dent_client_secret=${dent_secret}
-
-# Database
-DB_PATH=data/data.db
-
-# API
-API_HOST=0.0.0.0
-API_PORT=8000
-API_CORS_ORIGINS=
-INIT_DATA_MAX_AGE_SECONDS=86400
-API_RATE_LIMIT_PER_MINUTE=120
-
-# Docker
-HTTP_PORT=${http_port}
-
-# Frontend build
-VITE_TELEGRAM_BOT_USERNAME=${bot_username}
-EOF
-
-    chmod 600 .env
-    log_success "  ✔ .env создан"
-    save_runtime_backup "$(pwd)"
 }
 
 start_containers() {
@@ -713,8 +865,12 @@ hint() {
 print_summary() {
     local domain="$1"
     local ssl_port="$2"
-    local miniapp_url
+    local miniapp_url webhook_domain webhook_url
     miniapp_url="$(url_with_port "$domain" "$ssl_port")"
+    webhook_domain="$(env_get PLATEGA_WEBHOOK_DOMAIN 2>/dev/null || true)"
+    if [[ -n "$webhook_domain" ]]; then
+        webhook_url="$(url_with_port "$webhook_domain" "$ssl_port")/api/webhooks/platega"
+    fi
 
     printf '\n'
     printf "${GREEN}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}\n"
@@ -723,10 +879,18 @@ print_summary() {
     printf '\n'
     printf "  Мини-приложение:  ${YELLOW}%s${NC}\n" "$miniapp_url"
     printf "  API health:       ${YELLOW}%s/api/health${NC}\n" "$miniapp_url"
+    if [[ -n "$webhook_url" ]]; then
+        printf "  Platega webhook:  ${YELLOW}%s${NC}\n" "$webhook_url"
+    fi
     printf '\n'
     printf "${BOLD}  Обязательно в @BotFather:${NC}\n"
     printf "  1. Bot Settings → Menu Button / Web App URL → ${CYAN}%s${NC}\n" "$miniapp_url"
     printf "  2. Bot Settings → Domain (Login Widget)   → ${CYAN}%s${NC}\n" "$domain"
+    if [[ -n "$webhook_url" ]]; then
+        printf '\n'
+        printf "${BOLD}  Platega (личный кабинет):${NC}\n"
+        printf "  Callback URL → ${CYAN}%s${NC}\n" "$webhook_url"
+    fi
     printf '\n'
     printf "${BOLD}  Полезные команды:${NC}\n"
     printf "  docker compose ps\n"
@@ -738,29 +902,32 @@ print_summary() {
 run_update() {
     log_info "Режим обновления (найден ${NGINX_CONF})"
 
-    ensure_env_for_update
+    ensure_env_file
 
     local http_port="$DEFAULT_HTTP_PORT"
     local domain=""
+    local ssl_port="$DEFAULT_SSL_PORT"
     if [[ -f ".env" ]]; then
         http_port="$(grep -m1 '^HTTP_PORT=' .env | cut -d= -f2- | tr -d '\r' || true)"
         http_port="${http_port:-$DEFAULT_HTTP_PORT}"
         domain="$(grep -m1 '^DOMAIN=' .env | cut -d= -f2- | tr -d '\r' || true)"
     fi
     HTTP_PORT="$http_port"
+    ssl_port="$(nginx_read_ssl_port 2>/dev/null || true)"
+    ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
 
+    ensure_webhook_infrastructure
     start_containers
 
     if [[ -f "$NGINX_CONF" ]]; then
         sudo nginx -t && sudo systemctl reload nginx
     fi
 
-    local domain="${DOMAIN:-}"
     if [[ -z "$domain" && -f ".env" ]]; then
         domain="$(grep -m1 '^DOMAIN=' .env | cut -d= -f2- | tr -d '\r' || true)"
     fi
     if [[ -n "$domain" ]]; then
-        print_summary "$domain" "${SSL_PORT:-$DEFAULT_SSL_PORT}"
+        print_summary "$domain" "$ssl_port"
     else
         log_success "Обновление завершено."
     fi
@@ -773,12 +940,19 @@ run_install() {
     ensure_services
     ensure_certbot_nginx
 
-    log_info "\nШаг 2: домен и SSL"
+    log_info "\nШаг 2: домены и SSL"
 
     prompt "  Домен мини-приложения (app.example.com): " domain_input
     DOMAIN="$(sanitize_domain "$domain_input")"
     if [[ -z "$DOMAIN" ]]; then
         log_error "Некорректный домен."
+        exit 1
+    fi
+
+    prompt "  Домен webhook Platega (pay.example.com): " webhook_input
+    WEBHOOK_DOMAIN="$(sanitize_domain "$webhook_input")"
+    if [[ -z "$WEBHOOK_DOMAIN" ]]; then
+        log_error "Домен webhook Platega обязателен."
         exit 1
     fi
 
@@ -796,6 +970,7 @@ run_install() {
 
     SERVER_IP="$(get_server_ip || true)"
     DOMAIN_IP="$(resolve_domain_ip "$DOMAIN" || true)"
+    WEBHOOK_DOMAIN_IP="$(resolve_domain_ip "$WEBHOOK_DOMAIN" || true)"
 
     if [[ -n "$SERVER_IP" ]]; then
         log_info "  IP сервера: ${SERVER_IP}"
@@ -803,8 +978,15 @@ run_install() {
     if [[ -n "$DOMAIN_IP" ]]; then
         log_info "  IP домена ${DOMAIN}: ${DOMAIN_IP}"
     fi
+    if [[ -n "$WEBHOOK_DOMAIN_IP" ]]; then
+        log_info "  IP домена ${WEBHOOK_DOMAIN}: ${WEBHOOK_DOMAIN_IP}"
+    fi
     if [[ -n "$SERVER_IP" && -n "$DOMAIN_IP" && "$SERVER_IP" != "$DOMAIN_IP" ]]; then
         log_warn "  DNS ${DOMAIN} не указывает на этот сервер."
+        confirm "  Продолжить? (y/n): " || exit 1
+    fi
+    if [[ -n "$SERVER_IP" && -n "$WEBHOOK_DOMAIN_IP" && "$SERVER_IP" != "$WEBHOOK_DOMAIN_IP" ]]; then
+        log_warn "  DNS ${WEBHOOK_DOMAIN} не указывает на этот сервер."
         confirm "  Продолжить? (y/n): " || exit 1
     fi
 
@@ -815,8 +997,18 @@ run_install() {
     fi
 
     issue_certificates "$DOMAIN" "$SSL_EMAIL"
+    issue_certificates "$WEBHOOK_DOMAIN" "$SSL_EMAIL"
     write_nginx_config "$DOMAIN" "$SSL_PORT" "$HTTP_PORT"
-    create_env_file "$DOMAIN" "$SSL_EMAIL" "$SSL_PORT" "$HTTP_PORT"
+    write_webhook_nginx_config "$WEBHOOK_DOMAIN" "$SSL_PORT" "$HTTP_PORT"
+
+    INSTALL_DOMAIN="$DOMAIN"
+    INSTALL_WEBHOOK_DOMAIN="$WEBHOOK_DOMAIN"
+    INSTALL_SSL_EMAIL="$SSL_EMAIL"
+    INSTALL_SSL_PORT="$SSL_PORT"
+    INSTALL_HTTP_PORT="$HTTP_PORT"
+    ensure_env_file
+    unset INSTALL_DOMAIN INSTALL_WEBHOOK_DOMAIN INSTALL_SSL_EMAIL INSTALL_SSL_PORT INSTALL_HTTP_PORT
+
     start_containers
     print_summary "$DOMAIN" "$SSL_PORT"
 }
