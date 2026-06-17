@@ -544,7 +544,7 @@ def main() -> None:
     host = os.getenv("API_HOST", "127.0.0.1").strip() or "127.0.0.1"
     if not STATE.bot_token:
         raise SystemExit("telegram_bot_token is required")
-    if STATE.production and host not ("127.0.0.1", "::1"):
+    if STATE.production and host not in ("127.0.0.1", "::1", "0.0.0.0"):
         logger.info("API listening on all interfaces (container/network mode)")
     server = ThreadingHTTPServer((host, port), ApiHandler)
     logger.info("esimker API listening on http://%s:%s", host, port)
