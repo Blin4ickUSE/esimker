@@ -30,14 +30,22 @@ REPO_URL="${ESIMKER_REPO_URL:-https://github.com/Blin4ickUSE/esimker.git}"
 GIT_BRANCH="${ESIMKER_GIT_BRANCH:-main}"
 DEFAULT_INSTALL_DIR="${ESIMKER_INSTALL_DIR:-/opt/esimker}"
 
-is_remote_install() {
+# curl … | bash передаёт скрипт через pipe; BASH_SOURCE[0] часто /dev/fd/N, а не "bash".
+is_piped_script() {
     local source="${BASH_SOURCE[0]:-}"
-    [[ -z "$source" || "$source" == "bash" ]]
+    [[ -z "$source" || "$source" == "bash" ]] && return 0
+    [[ "$source" == /dev/fd/* || "$source" == /proc/self/fd/* ]] && return 0
+    [[ ! -f "$source" ]] && return 0
+    return 1
+}
+
+should_sync_from_github() {
+    is_piped_script
 }
 
 resolve_project_dir() {
     local source="${BASH_SOURCE[0]:-}"
-    if [[ -n "$source" && "$source" != "bash" ]]; then
+    if [[ -n "$source" && "$source" != "bash" && -f "$source" ]]; then
         local dir
         dir="$(cd "$(dirname "$source")" && pwd)"
         if [[ -f "$dir/docker-compose.yml" ]]; then
@@ -69,6 +77,10 @@ sync_from_github() {
     bootstrap_git
 
     if [[ ! -d "$dir/.git" ]]; then
+        if [[ -d "$dir" && -n "$(ls -A "$dir" 2>/dev/null || true)" ]]; then
+            log_error "Каталог ${dir} существует, но это не git-репозиторий. Удалите его или задайте ESIMKER_INSTALL_DIR."
+            exit 1
+        fi
         log_info "Клонирование esimker в ${dir}..."
         mkdir -p "$(dirname "$dir")"
         git clone --branch "$GIT_BRANCH" "$REPO_URL" "$dir"
@@ -78,7 +90,9 @@ sync_from_github() {
 
     log_info "Загрузка последней версии с GitHub (${GIT_BRANCH})..."
     git -C "$dir" fetch origin "$GIT_BRANCH"
+    git -C "$dir" checkout "$GIT_BRANCH"
     git -C "$dir" reset --hard "origin/${GIT_BRANCH}"
+    git -C "$dir" clean -fd
     log_success "  ✔ код обновлён ($(git -C "$dir" rev-parse --short HEAD))"
 }
 
@@ -94,8 +108,8 @@ prepare_project_root() {
     local project_dir
     project_dir="$(resolve_project_dir)"
 
-    if is_remote_install; then
-        log_info "Удалённая установка — синхронизация с GitHub"
+    if should_sync_from_github "$project_dir"; then
+        log_info "Синхронизация с GitHub → ${project_dir}"
         sync_from_github "$project_dir"
     else
         ensure_project_checkout "$project_dir"
@@ -103,6 +117,28 @@ prepare_project_root() {
 
     cd "$project_dir"
     SCRIPT_DIR="$project_dir"
+}
+
+# После git pull перезапускаем install.sh из репозитория (pipe-версия может быть устаревшей).
+reexec_from_repo_if_needed() {
+    [[ "${ESIMKER_REEXEC:-}" == "1" ]] && return
+
+    local repo_script="${SCRIPT_DIR}/install.sh"
+    local source="${BASH_SOURCE[0]:-}"
+
+    if [[ ! -f "$repo_script" ]]; then
+        return
+    fi
+
+    if [[ -n "$source" && "$source" == "$repo_script" ]]; then
+        return
+    fi
+
+    if should_sync_from_github "$SCRIPT_DIR"; then
+        export ESIMKER_REEXEC=1
+        log_info "Перезапуск install.sh из репозитория..."
+        exec bash "$repo_script"
+    fi
 }
 
 prompt() {
@@ -635,6 +671,7 @@ run_install() {
 # ── Entry ────────────────────────────────────────────────────────────────────
 
 prepare_project_root
+reexec_from_repo_if_needed
 require_project_root
 
 if [[ -f "$NGINX_CONF" ]]; then
