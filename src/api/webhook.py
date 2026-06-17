@@ -84,6 +84,9 @@ def parse_telegram_user(init_data: str, bot_token: str, *, max_age_seconds: int)
     return user
 
 
+_LOGIN_WIDGET_FIELDS = frozenset({"id", "first_name", "last_name", "username", "photo_url", "auth_date"})
+
+
 def parse_telegram_login(payload: dict[str, Any], bot_token: str, *, max_age_seconds: int) -> dict[str, Any]:
     """Verify Telegram Login Widget callback (browser auth)."""
     if not bot_token:
@@ -101,7 +104,9 @@ def parse_telegram_login(payload: dict[str, Any], bot_token: str, *, max_age_sec
     data_check = "\n".join(
         f"{k}={v}"
         for k, v in sorted(
-            (key, str(value)) for key, value in payload.items() if key != "hash" and value is not None
+            (key, str(payload[key]))
+            for key in payload
+            if key in _LOGIN_WIDGET_FIELDS and payload[key] is not None
         )
     )
     secret_key = hashlib.sha256(bot_token.encode()).digest()

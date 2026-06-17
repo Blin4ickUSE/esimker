@@ -515,8 +515,20 @@ function readStoredLogin(): TelegramLoginUser | null {
   }
 }
 
+function normalizeLoginUser(user: TelegramLoginUser): TelegramLoginUser {
+  return {
+    id: Number(user.id),
+    auth_date: Number(user.auth_date),
+    hash: String(user.hash),
+    ...(user.first_name ? { first_name: String(user.first_name) } : {}),
+    ...(user.last_name ? { last_name: String(user.last_name) } : {}),
+    ...(user.username ? { username: String(user.username) } : {}),
+    ...(user.photo_url ? { photo_url: String(user.photo_url) } : {}),
+  };
+}
+
 function storeLogin(user: TelegramLoginUser): void {
-  localStorage.setItem(LOGIN_KEY, JSON.stringify(user));
+  localStorage.setItem(LOGIN_KEY, JSON.stringify(normalizeLoginUser(user)));
 }
 
 declare global {
@@ -658,6 +670,8 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [botUsername, setBotUsername] = useState(() => resolveBotUsername(null));
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const pendingActionRef = useRef<(() => void) | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -674,20 +688,34 @@ export function AccountProvider({ children }: { children: ReactNode }) {
 
   const loginWithTelegram = useCallback(
     async (user: TelegramLoginUser) => {
-      storeLogin(user);
-      const ref = referralFromUrl();
-      const data = await apiFetch<ApiAccount>("/auth/telegram", {
-        method: "POST",
-        body: JSON.stringify({ ...user, ...(ref ? { ref } : {}) }),
-      });
-      setState(applyAccount(data));
-      setAuthenticated(true);
-      setReady(true);
-      setError(null);
-      setAuthModalOpen(false);
-      const pending = pendingActionRef.current;
-      pendingActionRef.current = null;
-      pending?.();
+      const login = normalizeLoginUser(user);
+      setAuthBusy(true);
+      setAuthError(null);
+      try {
+        storeLogin(login);
+        const ref = referralFromUrl();
+        const data = await apiFetch<ApiAccount>("/auth/telegram", {
+          method: "POST",
+          body: JSON.stringify({ ...login, ...(ref ? { ref } : {}) }),
+        });
+        setState(applyAccount(data));
+        setAuthenticated(true);
+        setReady(true);
+        setError(null);
+        setAuthModalOpen(false);
+        const pending = pendingActionRef.current;
+        pendingActionRef.current = null;
+        pending?.();
+      } catch (err) {
+        localStorage.removeItem(LOGIN_KEY);
+        setAuthenticated(false);
+        const message = err instanceof Error ? err.message : "auth failed";
+        setAuthError(message);
+        setError(message);
+        setAuthModalOpen(true);
+      } finally {
+        setAuthBusy(false);
+      }
     },
     [],
   );
@@ -699,6 +727,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     }
     if (!hasTelegramAuth()) {
       pendingActionRef.current = action ?? null;
+      setAuthError(null);
       setAuthModalOpen(true);
       return false;
     }
@@ -882,6 +911,8 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       <TelegramAuthModal
         open={authModalOpen}
         botUsername={botUsername}
+        busy={authBusy}
+        error={authError}
         onClose={closeAuthModal}
         onAuth={(user) => {
           void loginWithTelegram(user);

@@ -15,21 +15,31 @@ export interface TelegramLoginUser {
 interface TelegramAuthModalProps {
   open: boolean;
   botUsername: string;
+  busy?: boolean;
+  error?: string | null;
   onClose: () => void;
   onAuth: (user: TelegramLoginUser) => void;
 }
 
-export function TelegramAuthModal({ open, botUsername, onClose, onAuth }: TelegramAuthModalProps) {
+export function TelegramAuthModal({
+  open,
+  botUsername,
+  busy = false,
+  error = null,
+  onClose,
+  onAuth,
+}: TelegramAuthModalProps) {
   const { t } = useI18n();
   const widgetRef = useRef<HTMLDivElement>(null);
+  const onAuthRef = useRef(onAuth);
+  onAuthRef.current = onAuth;
 
   useEffect(() => {
     if (!open || !widgetRef.current) return;
 
-    const handler = (user: TelegramLoginUser) => {
-      onAuth(user);
+    (window as Window & { onTelegramAuth?: (user: TelegramLoginUser) => void }).onTelegramAuth = (user) => {
+      onAuthRef.current(user);
     };
-    (window as Window & { onTelegramAuth?: (user: TelegramLoginUser) => void }).onTelegramAuth = handler;
 
     widgetRef.current.innerHTML = "";
     const script = document.createElement("script");
@@ -45,21 +55,22 @@ export function TelegramAuthModal({ open, botUsername, onClose, onAuth }: Telegr
     return () => {
       delete (window as Window & { onTelegramAuth?: (user: TelegramLoginUser) => void }).onTelegramAuth;
     };
-  }, [open, botUsername, onAuth]);
+  }, [open, botUsername]);
 
   if (!open) return null;
 
   return (
-    <div style={s.backdrop} onClick={onClose}>
+    <div style={s.backdrop} onClick={busy ? undefined : onClose}>
       <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <button type="button" style={s.close} onClick={onClose} aria-label={t("back")}>
+        <button type="button" style={s.close} onClick={onClose} disabled={busy} aria-label={t("back")}>
           <X size={18} />
         </button>
         <div style={s.title}>{t("authTitle")}</div>
-        <div style={s.sub}>{t("authSub")}</div>
+        <div style={s.sub}>{busy ? t("authLoading") : t("authSub")}</div>
         <div style={s.widgetWrap}>
-          <div ref={widgetRef} style={s.widget} />
+          <div ref={widgetRef} style={{ ...s.widget, opacity: busy ? 0.5 : 1, pointerEvents: busy ? "none" : "auto" }} />
         </div>
+        {error && <div style={s.error}>{error}</div>}
         <a href={`https://t.me/${botUsername}`} target="_blank" rel="noopener noreferrer" style={s.botLink}>
           {t("authOpenBot")}
         </a>
@@ -125,6 +136,12 @@ const s: Record<string, CSSProperties> = {
     display: "flex",
     justifyContent: "center",
     width: "100%",
+  },
+  error: {
+    fontSize: "var(--fs-sm)",
+    color: "#f87171",
+    marginBottom: 12,
+    lineHeight: 1.4,
   },
   botLink: {
     display: "inline-block",
