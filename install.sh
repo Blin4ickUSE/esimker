@@ -26,8 +26,61 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_URL="${ESIMKER_REPO_URL:-https://github.com/Blin4ickUSE/esimker.git}"
+DEFAULT_INSTALL_DIR="${ESIMKER_INSTALL_DIR:-/opt/esimker}"
+
+resolve_project_dir() {
+    local source="${BASH_SOURCE[0]:-}"
+    if [[ -n "$source" && "$source" != "bash" ]]; then
+        local dir
+        dir="$(cd "$(dirname "$source")" && pwd)"
+        if [[ -f "$dir/docker-compose.yml" ]]; then
+            echo "$dir"
+            return
+        fi
+    fi
+    echo "$DEFAULT_INSTALL_DIR"
+}
+
+bootstrap_git() {
+    if command -v git >/dev/null 2>&1; then
+        return
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        export DEBCONF_NONINTERACTIVE_SEEN=true
+        apt-get update
+        apt-get install -y --no-install-recommends git
+        unset DEBIAN_FRONTEND DEBCONF_NONINTERACTIVE_SEEN
+        return
+    fi
+    log_error "git не найден. Установите git или клонируйте репозиторий вручную."
+    exit 1
+}
+
+ensure_project_checkout() {
+    local dir="$1"
+    if [[ -f "$dir/docker-compose.yml" ]]; then
+        return
+    fi
+    bootstrap_git
+    if [[ -d "$dir/.git" ]]; then
+        log_info "Обновление репозитория в ${dir}..."
+        git -C "$dir" pull --ff-only
+        return
+    fi
+    log_info "Клонирование esimker в ${dir}..."
+    mkdir -p "$(dirname "$dir")"
+    git clone "$REPO_URL" "$dir"
+}
+
+prepare_project_root() {
+    local project_dir
+    project_dir="$(resolve_project_dir)"
+    ensure_project_checkout "$project_dir"
+    cd "$project_dir"
+    SCRIPT_DIR="$project_dir"
+}
 
 prompt() {
     local message="$1"
@@ -558,6 +611,7 @@ run_install() {
 
 # ── Entry ────────────────────────────────────────────────────────────────────
 
+prepare_project_root
 require_project_root
 
 if [[ -f "$NGINX_CONF" ]]; then
