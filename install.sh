@@ -107,7 +107,7 @@ restore_runtime_backup() {
 nginx_read_domain() {
     local domain=""
     if [[ -f "$NGINX_CONF" ]]; then
-        domain="$(grep -E 'server_name ' "$NGINX_CONF" 2>/dev/null | grep -v '_' | head -n1 | awk '{print $2}' | tr -d ';' || true)"
+        domain="$(grep -E 'server_name ' "$NGINX_CONF" 2>/dev/null | grep -vE 'server_name\s+_;' | head -n1 | awk '{print $2}' | tr -d ';' || true)"
     fi
     echo "$domain"
 }
@@ -149,27 +149,46 @@ ensure_env_for_update() {
         return
     fi
 
+    log_warn "\n.env не найден — введите параметры заново"
+
     local domain ssl_port http_port email
+    local domain_input ssl_input http_input email_input
+
     domain="$(nginx_read_domain)"
     ssl_port="$(nginx_read_ssl_port)"
     http_port="$(nginx_read_http_port)"
     ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
     http_port="${http_port:-$DEFAULT_HTTP_PORT}"
 
+    if [[ -n "$domain" ]]; then
+        prompt "  Домен [${domain}]: " domain_input
+        domain="$(sanitize_domain "${domain_input:-$domain}")"
+    else
+        prompt "  Домен (app.example.com): " domain_input
+        domain="$(sanitize_domain "$domain_input")"
+    fi
     if [[ -z "$domain" ]]; then
-        log_error ".env не найден и домен не определён из ${NGINX_CONF}."
-        log_info "  cp .env.example .env && nano .env"
+        log_error "Домен обязателен."
         exit 1
     fi
 
-    log_warn ".env отсутствует — создайте заново (нужен токен бота из @BotFather)"
     email="$(certbot_email_for_domain "$domain")"
-    if [[ -z "$email" ]]; then
+    if [[ -n "$email" ]]; then
+        prompt "  Email [${email}]: " email_input
+        email="${email_input:-$email}"
+    else
         prompt "  Email (Let's Encrypt): " email
     fi
     if [[ -z "$email" ]]; then
         email="admin@${domain}"
     fi
+
+    prompt "  SSL-порт [${ssl_port}]: " ssl_input
+    ssl_port="${ssl_input:-$ssl_port}"
+
+    prompt "  Docker web-порт [${http_port}]: " http_input
+    http_port="${http_input:-$http_port}"
+    HTTP_PORT="$http_port"
 
     create_env_file "$domain" "$email" "$ssl_port" "$http_port"
     save_runtime_backup "$(pwd)"
