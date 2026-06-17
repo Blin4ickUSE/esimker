@@ -27,7 +27,13 @@ on_error() {
 trap 'on_error $LINENO' ERR
 
 REPO_URL="${ESIMKER_REPO_URL:-https://github.com/Blin4ickUSE/esimker.git}"
+GIT_BRANCH="${ESIMKER_GIT_BRANCH:-main}"
 DEFAULT_INSTALL_DIR="${ESIMKER_INSTALL_DIR:-/opt/esimker}"
+
+is_remote_install() {
+    local source="${BASH_SOURCE[0]:-}"
+    [[ -z "$source" || "$source" == "bash" ]]
+}
 
 resolve_project_dir() {
     local source="${BASH_SOURCE[0]:-}"
@@ -58,26 +64,43 @@ bootstrap_git() {
     exit 1
 }
 
+sync_from_github() {
+    local dir="$1"
+    bootstrap_git
+
+    if [[ ! -d "$dir/.git" ]]; then
+        log_info "Клонирование esimker в ${dir}..."
+        mkdir -p "$(dirname "$dir")"
+        git clone --branch "$GIT_BRANCH" "$REPO_URL" "$dir"
+        log_success "  ✔ репозиторий склонирован"
+        return
+    fi
+
+    log_info "Загрузка последней версии с GitHub (${GIT_BRANCH})..."
+    git -C "$dir" fetch origin "$GIT_BRANCH"
+    git -C "$dir" reset --hard "origin/${GIT_BRANCH}"
+    log_success "  ✔ код обновлён ($(git -C "$dir" rev-parse --short HEAD))"
+}
+
 ensure_project_checkout() {
     local dir="$1"
     if [[ -f "$dir/docker-compose.yml" ]]; then
         return
     fi
-    bootstrap_git
-    if [[ -d "$dir/.git" ]]; then
-        log_info "Обновление репозитория в ${dir}..."
-        git -C "$dir" pull --ff-only
-        return
-    fi
-    log_info "Клонирование esimker в ${dir}..."
-    mkdir -p "$(dirname "$dir")"
-    git clone "$REPO_URL" "$dir"
+    sync_from_github "$dir"
 }
 
 prepare_project_root() {
     local project_dir
     project_dir="$(resolve_project_dir)"
-    ensure_project_checkout "$project_dir"
+
+    if is_remote_install; then
+        log_info "Удалённая установка — синхронизация с GitHub"
+        sync_from_github "$project_dir"
+    else
+        ensure_project_checkout "$project_dir"
+    fi
+
     cd "$project_dir"
     SCRIPT_DIR="$project_dir"
 }
