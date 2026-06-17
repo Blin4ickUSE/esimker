@@ -43,7 +43,9 @@ from core.security import (
     validate_telegram_id,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+REFERRAL_COMMISSION_RATE = 0.10
+REFERRAL_FRIEND_DISCOUNT_RATE = 0.10
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = ROOT_DIR / "data" / "data.db"
@@ -254,6 +256,7 @@ class PaymentIntent:
     payment_provider: str | None = None
     order_id: str | None = None
     esim_id: str | None = None
+    provider_ref: str | None = None
     completed_at: str | None = None
 
     def to_client_dict(self) -> dict[str, Any]:
@@ -543,6 +546,7 @@ CREATE TABLE IF NOT EXISTS payment_intents (
     payment_provider TEXT,
     order_id         TEXT,
     esim_id          TEXT,
+    provider_ref     TEXT,
     expires_at       TEXT NOT NULL,
     created_at       TEXT NOT NULL,
     completed_at     TEXT
@@ -558,6 +562,7 @@ CREATE INDEX IF NOT EXISTS idx_referral_earnings_referrer ON referral_earnings(r
 CREATE INDEX IF NOT EXISTS idx_referral_relations_referrer ON referral_relations(referrer_id);
 CREATE INDEX IF NOT EXISTS idx_payment_intents_user ON payment_intents(user_id);
 CREATE INDEX IF NOT EXISTS idx_payment_intents_status ON payment_intents(status);
+CREATE INDEX IF NOT EXISTS idx_payment_intents_provider_ref ON payment_intents(provider_ref);
 
 CREATE TABLE IF NOT EXISTS popular_destinations (
     country_name TEXT PRIMARY KEY,
@@ -662,6 +667,7 @@ def _row_to_payment_intent(row: sqlite3.Row) -> PaymentIntent:
         payment_provider=row["payment_provider"],
         order_id=row["order_id"],
         esim_id=row["esim_id"],
+        provider_ref=row["provider_ref"] if "provider_ref" in row.keys() else None,
         expires_at=row["expires_at"],
         created_at=row["created_at"],
         completed_at=row["completed_at"],
@@ -748,6 +754,16 @@ class Database:
                             ON CONFLICT(country_name) DO NOTHING
                             """,
                             (name, i),
+                        )
+                if current < 4:
+                    cols = {r["name"] for r in conn.execute("PRAGMA table_info(payment_intents)")}
+                    if "provider_ref" not in cols:
+                        conn.execute(
+                            "ALTER TABLE payment_intents ADD COLUMN provider_ref TEXT"
+                        )
+                        conn.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_payment_intents_provider_ref "
+                            "ON payment_intents(provider_ref)"
                         )
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
@@ -1450,9 +1466,11 @@ class Database:
     ) -> tuple[Order, Esim]:
         """Atomic purchase: debit balance, create order + eSIM, bump country stats."""
         with self.transaction() as conn:
+            discount = self.referral_friend_discount_rate(user_id, conn=conn)
+            effective = round(amount_usd * (1.0 - discount), 2)
             self.adjust_balance(
                 user_id,
-                -amount_usd,
+                -effective,
                 kind="purchase",
                 reference_id=order_id,
                 conn=conn,
@@ -1464,7 +1482,7 @@ class Database:
                 country_code=country_code,
                 gb=gb,
                 days=days,
-                amount_usd=amount_usd,
+                amount_usd=effective,
                 payment_method="balance",
                 status="paid",
                 conn=conn,
@@ -1477,7 +1495,7 @@ class Database:
                 country_code=country_code,
                 gb=gb,
                 days=days,
-                usd=amount_usd,
+                usd=effective,
                 conn=conn,
                 **(esim_fields or {}),
             )
@@ -1488,6 +1506,7 @@ class Database:
                     purchased=True,
                     conn=conn,
                 )
+            self._apply_referral_commission(user_id, order_id, effective, conn=conn)
         return order, esim
 
     def purchase_external(
@@ -1542,6 +1561,7 @@ class Database:
                     purchased=True,
                     conn=db,
                 )
+            self._apply_referral_commission(user_id, order_id, amount_usd, conn=db)
             return order, esim
 
         if conn is not None:
@@ -1626,6 +1646,64 @@ class Database:
 
     # --- Referrals ---
 
+    def referral_friend_discount_rate(
+        self,
+        user_id: int,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> float:
+        """10% off first paid order for users who joined via referral link."""
+
+        def _rate(db: sqlite3.Connection) -> float:
+            row = db.execute(
+                "SELECT referred_by_id FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if row is None or row["referred_by_id"] is None:
+                return 0.0
+            paid = db.execute(
+                "SELECT COUNT(*) AS c FROM orders WHERE user_id = ? AND status = 'paid'",
+                (user_id,),
+            ).fetchone()
+            if paid is None or int(paid["c"]) > 0:
+                return 0.0
+            return REFERRAL_FRIEND_DISCOUNT_RATE
+
+        if conn is not None:
+            return _rate(conn)
+        return _rate(self.connect())
+
+    def _apply_referral_commission(
+        self,
+        buyer_id: int,
+        order_id: str,
+        amount_usd: float,
+        *,
+        conn: sqlite3.Connection,
+    ) -> None:
+        row = conn.execute(
+            "SELECT referred_by_id FROM users WHERE id = ?",
+            (buyer_id,),
+        ).fetchone()
+        if row is None or row["referred_by_id"] is None:
+            return
+        referrer_id = int(row["referred_by_id"])
+        commission = round(float(amount_usd) * REFERRAL_COMMISSION_RATE, 2)
+        if commission < 0.01:
+            return
+        conn.execute(
+            "UPDATE orders SET referral_commission_usd = ? WHERE id = ?",
+            (commission, order_id),
+        )
+        self._record_referral_earning(
+            referrer_id,
+            commission,
+            kind="purchase",
+            referred_user_id=buyer_id,
+            order_id=order_id,
+            conn=conn,
+        )
+
     def record_referral_earning(
         self,
         referrer_id: int,
@@ -1634,35 +1712,64 @@ class Database:
         kind: ReferralEarningKind,
         referred_user_id: int | None = None,
         order_id: str | None = None,
+        conn: sqlite3.Connection | None = None,
     ) -> ReferralEarning:
-        now = isoformat()
-        with self.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO referral_earnings
-                    (referrer_id, referred_user_id, order_id, commission_usd, kind, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (referrer_id, referred_user_id, order_id, commission_usd, kind, now),
-            )
-            conn.execute(
-                """
-                UPDATE users SET
-                    referral_earned_usd = referral_earned_usd + ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (commission_usd, now, referrer_id),
-            )
-            self.adjust_balance(
+        if conn is not None:
+            return self._record_referral_earning(
                 referrer_id,
                 commission_usd,
-                kind="referral",
-                reference_id=order_id,
-                note=kind,
+                kind=kind,
+                referred_user_id=referred_user_id,
+                order_id=order_id,
                 conn=conn,
             )
-            row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        with self.transaction() as tx:
+            return self._record_referral_earning(
+                referrer_id,
+                commission_usd,
+                kind=kind,
+                referred_user_id=referred_user_id,
+                order_id=order_id,
+                conn=tx,
+            )
+
+    def _record_referral_earning(
+        self,
+        referrer_id: int,
+        commission_usd: float,
+        *,
+        kind: ReferralEarningKind,
+        referred_user_id: int | None = None,
+        order_id: str | None = None,
+        conn: sqlite3.Connection,
+    ) -> ReferralEarning:
+        now = isoformat()
+        conn.execute(
+            """
+            INSERT INTO referral_earnings
+                (referrer_id, referred_user_id, order_id, commission_usd, kind, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (referrer_id, referred_user_id, order_id, commission_usd, kind, now),
+        )
+        conn.execute(
+            """
+            UPDATE users SET
+                referral_earned_usd = referral_earned_usd + ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (commission_usd, now, referrer_id),
+        )
+        self.adjust_balance(
+            referrer_id,
+            commission_usd,
+            kind="referral",
+            reference_id=order_id,
+            note=kind,
+            conn=conn,
+        )
+        row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         return ReferralEarning(
             id=row_id,
             referrer_id=referrer_id,
@@ -1862,6 +1969,9 @@ class Database:
         expires = self._payment_intent_expires_at()
         amount_usd = validate_money(amount_usd, field="amount")
         with self.transaction() as conn:
+            discount = self.referral_friend_discount_rate(user_id, conn=conn)
+            if discount > 0:
+                amount_usd = round(amount_usd * (1.0 - discount), 2)
             conn.execute(
                 """
                 INSERT INTO payment_intents (
@@ -1897,6 +2007,61 @@ class Database:
         if row is None:
             raise NotFoundError("payment not found")
         return self._ensure_payment_intent_active(_row_to_payment_intent(row))
+
+    def get_payment_intent_by_provider_ref(self, provider_ref: str) -> PaymentIntent | None:
+        provider_ref = optional_text(provider_ref, max_len=128, field="provider ref")
+        if not provider_ref:
+            return None
+        row = self.connect().execute(
+            "SELECT * FROM payment_intents WHERE provider_ref = ?",
+            (provider_ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._ensure_payment_intent_active(_row_to_payment_intent(row))
+
+    def bind_payment_intent_provider(
+        self,
+        intent_id: str,
+        user_id: int,
+        *,
+        provider_ref: str,
+        payment_method: str,
+        payment_provider: str,
+    ) -> PaymentIntent:
+        intent_id = validate_record_id(intent_id, field="payment id")
+        provider_ref = optional_text(provider_ref, max_len=128, field="provider ref")
+        if not provider_ref:
+            raise SecurityError("provider ref is required")
+        payment_method = validate_payment_method(payment_method)
+        payment_provider = optional_text(payment_provider, max_len=64, field="payment_provider")
+        if not payment_provider:
+            raise SecurityError("payment provider is required")
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intents WHERE id = ? AND user_id = ?",
+                (intent_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("payment not found")
+            intent = self._ensure_payment_intent_active(_row_to_payment_intent(row))
+            if intent.status != "pending":
+                raise ConflictError("payment is not pending")
+            conn.execute(
+                """
+                UPDATE payment_intents SET
+                    provider_ref = ?,
+                    payment_method = ?,
+                    payment_provider = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (provider_ref, payment_method, payment_provider, intent_id, user_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM payment_intents WHERE id = ?",
+                (intent_id,),
+            ).fetchone()
+        return _row_to_payment_intent(updated)
 
     def complete_payment_intent(
         self,

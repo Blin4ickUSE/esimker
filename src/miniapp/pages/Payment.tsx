@@ -46,17 +46,47 @@ function CoinRow({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
+const PLATEGA_METHODS = new Set<MethodId>(["sbp", "card_ru", "card_intl"]);
+
 export default function Payment() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { t } = useI18n();
-  const { getPaymentIntent, completePayment } = useAccount();
+  const { getPaymentIntent, checkoutPayment, completePayment, refresh } = useAccount();
   const [step, setStep] = useState<Step>("methods");
   const [busy, setBusy] = useState(false);
   const [intent, setIntent] = useState<PaymentIntentView | null>(null);
   const [loadError, setLoadError] = useState(false);
 
   const paymentId = params.get("id")?.trim() ?? "";
+  const paidReturn = params.get("paid");
+
+  useEffect(() => {
+    if (!paymentId || paidReturn !== "1") return;
+    let cancelled = false;
+    let attempts = 0;
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const data = await getPaymentIntent(paymentId);
+        if (cancelled) return;
+        setIntent(data);
+        if (data.status === "completed") {
+          await refresh();
+          if (data.kind === "topup") navigate(paths.home, { replace: true });
+          else navigate(paths.myEsims, { replace: true });
+        } else if (attempts < 30) {
+          window.setTimeout(poll, 2000);
+        }
+      } catch {
+        if (attempts < 30 && !cancelled) window.setTimeout(poll, 2000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [paymentId, paidReturn, getPaymentIntent, refresh, navigate]);
 
   useEffect(() => {
     if (!paymentId) {
@@ -100,6 +130,16 @@ export default function Payment() {
       const payment_provider = method;
       const payment_method =
         method.startsWith("ton_") || method.startsWith("trc20_") ? "crypto" : method;
+
+      if (PLATEGA_METHODS.has(method as MethodId)) {
+        const { redirectUrl } = await checkoutPayment(intent.id, {
+          payment_method,
+          payment_provider,
+        });
+        window.location.href = redirectUrl;
+        return;
+      }
+
       const esim = await completePayment(intent.id, { payment_method, payment_provider });
       if (intent.kind === "topup") {
         navigate(paths.home);

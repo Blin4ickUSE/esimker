@@ -53,6 +53,14 @@ from core.security import (  # noqa: E402
 
 from core.security import optional_text  # noqa: E402
 from core.esim_profile import build_esim_fields  # noqa: E402
+from api.payments.platega import (  # noqa: E402
+    PLATEGA_PROVIDERS,
+    PlategaError,
+    configured as platega_configured,
+    create_transaction,
+    usd_to_rub,
+    verify_callback_headers,
+)
 
 load_dotenv(ROOT / ".env")
 
@@ -301,10 +309,27 @@ def resolve_user(handler: BaseHTTPRequestHandler, *, ref: str | None = None) -> 
     raise AuthenticationError("authentication required")
 
 
+def miniapp_base_url() -> str:
+    return os.getenv("MINIAPP_URL", "https://localhost").strip().rstrip("/")
+
+
+def referral_share_links(code: str) -> dict[str, str]:
+    web = f"{miniapp_base_url()}/?ref={code}"
+    links: dict[str, str] = {"web": web}
+    bot = STATE.bot_username.lstrip("@")
+    if bot:
+        links["bot"] = f"https://t.me/{bot}?start=ref_{code}"
+    return links
+
+
 def account_payload(user_id: int) -> dict[str, Any]:
     snapshot = STATE.db.get_account_snapshot(user_id)
     base = snapshot.to_client_dict()
-    base["referral"]["link"] = f"/?ref={snapshot.user.referral_code}"
+    links = referral_share_links(snapshot.user.referral_code)
+    base["referral"]["link"] = links["web"]
+    base["referral"]["shareLinkWeb"] = links["web"]
+    if "bot" in links:
+        base["referral"]["shareLinkBot"] = links["bot"]
     return base
 
 
@@ -322,9 +347,95 @@ def esim_fields(esim_id: str, gb: Any) -> dict[str, Any]:
     return build_esim_fields(esim_id, gb)
 
 
-def require_payment_gateway() -> None:
+def require_mock_payment_gateway() -> None:
     if not STATE.allow_mock_payments:
+        raise SecurityError("mock payments are disabled")
+
+
+def require_platega() -> None:
+    if not platega_configured():
         raise SecurityError("payment gateway is not configured")
+
+
+def handle_platega_webhook(handler: BaseHTTPRequestHandler, body: dict[str, Any]) -> None:
+    merchant_id = handler.headers.get("X-MerchantId", "")
+    secret = handler.headers.get("X-Secret", "")
+    if not verify_callback_headers(merchant_id, secret):
+        json_response(handler, 401, {"error": "unauthorized"})
+        return
+
+    tx_id = body.get("id") or body.get("transactionId")
+    if not tx_id:
+        json_response(handler, 400, {"error": "missing transaction id"})
+        return
+
+    status = str(body.get("status", "")).upper()
+    intent = STATE.db.get_payment_intent_by_provider_ref(str(tx_id))
+    if intent is None:
+        logger.warning("Platega callback for unknown transaction %s", tx_id)
+        json_response(handler, 200, {"ok": True})
+        return
+
+    if status == "CONFIRMED" and intent.status == "pending":
+        try:
+            STATE.db.complete_payment_intent(
+                intent.id,
+                intent.user_id,
+                payment_method=intent.payment_method or "sbp",
+                payment_provider=intent.payment_provider,
+                payment_ref=str(tx_id),
+            )
+            logger.info("Platega payment confirmed for intent %s", intent.id)
+        except ConflictError:
+            pass
+
+    json_response(handler, 200, {"ok": True})
+
+
+def create_platega_checkout(user: Any, body: dict[str, Any]) -> dict[str, Any]:
+    require_platega()
+    intent_id = validate_record_id(body.get("id", ""), field="payment id")
+    provider_raw = body.get("payment_provider") or body.get("payment_method", "")
+    provider = validate_payment_provider(provider_raw)
+    if provider not in PLATEGA_PROVIDERS:
+        raise SecurityError("payment provider is not supported")
+
+    intent = STATE.db.get_payment_intent(intent_id, user.id)
+    if intent.status != "pending":
+        raise ConflictError("payment is not pending")
+
+    amount_rub = usd_to_rub(intent.amount_usd)
+    base = miniapp_base_url()
+    return_url = f"{base}/payment?id={intent.id}&paid=1"
+    failed_url = f"{base}/payment?id={intent.id}&paid=0"
+    if intent.kind == "topup":
+        description = f"esimker balance top-up ${intent.amount_usd:.2f}"
+    else:
+        description = f"esimker eSIM — {intent.plan_name or 'plan'}"
+
+    try:
+        result = create_transaction(
+            provider=provider,
+            amount_rub=amount_rub,
+            description=description,
+            return_url=return_url,
+            failed_url=failed_url,
+            payload=intent.id,
+        )
+    except PlategaError as exc:
+        raise SecurityError(str(exc)) from exc
+
+    STATE.db.bind_payment_intent_provider(
+        intent.id,
+        user.id,
+        provider_ref=result["transactionId"],
+        payment_method=provider,
+        payment_provider=provider,
+    )
+    return {
+        "redirectUrl": result["redirectUrl"],
+        "transactionId": result["transactionId"],
+    }
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -384,6 +495,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             if method == "POST":
                 body = read_json(self)
 
+                if path == "/api/webhooks/platega":
+                    handle_platega_webhook(self, body)
+                    return
+
                 if path == "/api/auth/telegram":
                     enforce_rate_limit(self)
                     if not STATE.bot_token:
@@ -428,8 +543,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                     json_response(self, 200, intent.to_client_dict())
                     return
 
+                if path == "/api/payments/checkout":
+                    checkout = create_platega_checkout(user, body)
+                    json_response(self, 200, checkout)
+                    return
+
                 if path == "/api/payments/complete":
-                    require_payment_gateway()
+                    require_mock_payment_gateway()
                     intent_id = validate_record_id(body.get("id", ""), field="payment id")
                     method_name = validate_payment_method(body.get("payment_method", "card"))
                     provider_raw = body.get("payment_provider")

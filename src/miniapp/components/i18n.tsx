@@ -394,6 +394,8 @@ export interface ReferralInfo {
   earnedUsd: number;
   referredCount: number;
   link: string;
+  shareLinkWeb?: string;
+  shareLinkBot?: string;
 }
 
 export interface AccountSettings {
@@ -451,6 +453,7 @@ interface AccountCtx extends AccountState {
   buy: (plan: Plan) => Promise<Esim | null>;
   createPaymentIntent: (body: Record<string, unknown>) => Promise<PaymentIntentView>;
   getPaymentIntent: (id: string) => Promise<PaymentIntentView>;
+  checkoutPayment: (id: string, opts?: PaymentOpts) => Promise<{ redirectUrl: string }>;
   completePayment: (id: string, opts?: PaymentOpts) => Promise<Esim | null>;
   activatePromo: (code: string) => Promise<PromoResult>;
   touchCountry: (name: string) => void;
@@ -462,6 +465,7 @@ interface AccountCtx extends AccountState {
 
 const API_BASE = "/api";
 const LOGIN_KEY = "esimker.telegramLogin";
+const REF_KEY = "esimker.ref";
 const LOGIN_MAX_AGE_MS = 86_400_000;
 const DEFAULT_BOT_USERNAME = "esimker_bot";
 
@@ -483,12 +487,40 @@ async function fetchBotUsername(): Promise<string> {
   return resolveBotUsername(null);
 }
 
-function hasWebAppAuth(): boolean {
+function isTelegramMiniApp(): boolean {
   return Boolean(window.Telegram?.WebApp?.initData?.trim());
 }
 
+function buildReferralLink(code: string, botUsername: string): string {
+  const bot = botUsername.replace(/^@/, "");
+  if (isTelegramMiniApp() && bot) {
+    return `https://t.me/${bot}?start=ref_${code}`;
+  }
+  const envBase = import.meta.env.VITE_MINIAPP_URL as string | undefined;
+  const base = (envBase || window.location.origin).replace(/\/$/, "");
+  return `${base}/?ref=${encodeURIComponent(code)}`;
+}
+
+function captureReferralFromUrl(): void {
+  const ref = new URLSearchParams(window.location.search).get("ref")?.trim();
+  if (!ref) return;
+  try {
+    localStorage.setItem(REF_KEY, ref.toUpperCase());
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function clearStoredReferral(): void {
+  try {
+    localStorage.removeItem(REF_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 function hasTelegramAuth(): boolean {
-  return hasWebAppAuth() || Boolean(readStoredLogin());
+  return isTelegramMiniApp() || Boolean(readStoredLogin());
 }
 
 const LEGACY_DEV_KEYS = ["esimker.devBypass", "esimker.devTelegramId"] as const;
@@ -596,8 +628,16 @@ function referralFromUrl(): string | null {
   const ref = new URLSearchParams(window.location.search).get("ref");
   if (ref?.trim()) return ref.trim();
   const startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param?.trim();
-  if (!startParam) return null;
-  return startParam.toLowerCase().startsWith("ref_") ? startParam.slice(4) : startParam;
+  if (startParam) {
+    return startParam.toLowerCase().startsWith("ref_") ? startParam.slice(4) : startParam;
+  }
+  try {
+    const stored = localStorage.getItem(REF_KEY);
+    if (stored?.trim()) return stored.trim();
+  } catch {
+    /* ignore */
+  }
+  return null;
 }
 
 function referralLink(code: string): string {
@@ -628,8 +668,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
-function applyAccount(data: ApiAccount): AccountState {
+function applyAccount(data: ApiAccount, botUsername: string): AccountState {
   const referral = data.referral ?? defaultReferral();
+  const code = referral.code || "";
   return {
     balanceUsd: data.balanceUsd ?? 0,
     esims: (data.esims ?? []).map((e) => migrateEsim(e as LegacyEsim)),
@@ -638,7 +679,9 @@ function applyAccount(data: ApiAccount): AccountState {
     countryStats: data.countryStats ?? {},
     referral: {
       ...referral,
-      link: referral.link?.startsWith("http") ? referral.link : referralLink(referral.code),
+      link: code ? buildReferralLink(code, botUsername) : referral.link,
+      shareLinkWeb: referral.shareLinkWeb || (code ? referralLink(code) : undefined),
+      shareLinkBot: referral.shareLinkBot,
     },
     settings: {
       email: data.settings?.email ?? null,
@@ -682,17 +725,25 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   const [authError, setAuthError] = useState<string | null>(null);
   const pendingActionRef = useRef<(() => void) | null>(null);
   const stateRef = useRef(state);
+  const botUsernameRef = useRef(botUsername);
   stateRef.current = state;
+  botUsernameRef.current = botUsername;
+
+  const mergeAccount = useCallback(
+    (data: ApiAccount) => applyAccount(data, botUsernameRef.current),
+    [],
+  );
 
   const refresh = useCallback(async () => {
     const ref = referralFromUrl();
     const qs = ref ? `?ref=${encodeURIComponent(ref)}` : "";
     const data = await apiFetch<ApiAccount>(`/account${qs}`);
-    setState(applyAccount(data));
+    setState(mergeAccount(data));
     setError(null);
     setAuthenticated(true);
     setReady(true);
-  }, []);
+    if (ref) clearStoredReferral();
+  }, [botUsername, mergeAccount]);
 
   const loginWithTelegram = useCallback(
     async (user: TelegramLoginUser) => {
@@ -706,11 +757,12 @@ export function AccountProvider({ children }: { children: ReactNode }) {
           method: "POST",
           body: JSON.stringify({ ...login, ...(ref ? { ref } : {}) }),
         });
-        setState(applyAccount(data));
+        setState(mergeAccount(data));
         setAuthenticated(true);
         setReady(true);
         setError(null);
         setAuthModalOpen(false);
+        if (ref) clearStoredReferral();
         const pending = pendingActionRef.current;
         pendingActionRef.current = null;
         pending?.();
@@ -725,8 +777,22 @@ export function AccountProvider({ children }: { children: ReactNode }) {
         setAuthBusy(false);
       }
     },
-    [],
+    [mergeAccount],
   );
+
+  useEffect(() => {
+    if (authenticated && botUsername) {
+      setState((prev) => {
+        if (!prev.referral.code) return prev;
+        const link = buildReferralLink(prev.referral.code, botUsername);
+        if (link === prev.referral.link) return prev;
+        return {
+          ...prev,
+          referral: { ...prev.referral, link },
+        };
+      });
+    }
+  }, [authenticated, botUsername]);
 
   const requireAuth = useCallback((action?: () => void): boolean => {
     if (authenticated) {
@@ -777,6 +843,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     purgeLegacyDevStorage();
+    captureReferralFromUrl();
     window.Telegram?.WebApp?.ready?.();
     window.Telegram?.WebApp?.expand?.();
     let cancelled = false;
@@ -814,7 +881,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
         method: "POST",
         body: JSON.stringify(planRef(plan)),
       });
-      const next = applyAccount(data);
+      const next = mergeAccount(data);
       setState(next);
       const id = data.esimId ?? next.esims[0]?.id;
       return id ? next.esims.find((e) => e.id === id) ?? next.esims[0] ?? null : null;
@@ -834,6 +901,17 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     return apiFetch<PaymentIntentView>(`/payments/intent?id=${encodeURIComponent(id)}`);
   }, []);
 
+  const checkoutPayment = useCallback(async (id: string, opts?: PaymentOpts) => {
+    return apiFetch<{ redirectUrl: string; transactionId?: string }>("/payments/checkout", {
+      method: "POST",
+      body: JSON.stringify({
+        id,
+        payment_method: opts?.payment_method,
+        payment_provider: opts?.payment_provider,
+      }),
+    });
+  }, []);
+
   const completePayment = useCallback(async (id: string, opts?: PaymentOpts): Promise<Esim | null> => {
     const data = await apiFetch<ApiAccount>("/payments/complete", {
       method: "POST",
@@ -843,18 +921,18 @@ export function AccountProvider({ children }: { children: ReactNode }) {
         payment_provider: opts?.payment_provider,
       }),
     });
-    const next = applyAccount(data);
+    const next = mergeAccount(data);
     setState(next);
     const esimId = data.esimId;
     return esimId ? next.esims.find((e) => e.id === esimId) ?? null : null;
-  }, []);
+  }, [mergeAccount]);
 
   const activatePromo = useCallback(async (code: string): Promise<PromoResult> => {
     const data = await apiFetch<ApiAccount & { result?: PromoResult }>("/account/promo", {
       method: "POST",
       body: JSON.stringify({ code }),
     });
-    setState(applyAccount(data));
+    setState(mergeAccount(data));
     return data.result ?? "invalid";
   }, []);
 
@@ -863,7 +941,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       method: "POST",
       body: JSON.stringify({ country_name: name }),
     })
-      .then((data) => setState(applyAccount(data)))
+      .then((data) => setState(mergeAccount(data)))
       .catch(() => undefined);
   }, []);
 
@@ -872,12 +950,12 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
-    setState(applyAccount(data));
+    setState(mergeAccount(data));
   }, []);
 
   const unlinkEmail = useCallback(async () => {
     const data = await apiFetch<ApiAccount>("/settings/email/unlink", { method: "POST", body: "{}" });
-    setState(applyAccount(data));
+    setState(mergeAccount(data));
   }, []);
 
   const confirmEmail = useCallback(async (email: string, code: string) => {
@@ -885,7 +963,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       method: "POST",
       body: JSON.stringify({ email, code }),
     });
-    setState(applyAccount(data));
+    setState(mergeAccount(data));
   }, []);
 
   const value = useMemo<AccountCtx>(
@@ -902,6 +980,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       buy,
       createPaymentIntent,
       getPaymentIntent,
+      checkoutPayment,
       completePayment,
       activatePromo,
       touchCountry,
@@ -910,7 +989,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       unlinkEmail,
       refresh,
     }),
-    [state, ready, loading, authenticated, error, botUsername, authModalOpen, requireAuth, closeAuthModal, buy, createPaymentIntent, getPaymentIntent, completePayment, activatePromo, touchCountry, updateSettings, confirmEmail, unlinkEmail, refresh],
+    [state, ready, loading, authenticated, error, botUsername, authModalOpen, requireAuth, closeAuthModal, buy, createPaymentIntent, getPaymentIntent, checkoutPayment, completePayment, activatePromo, touchCountry, updateSettings, confirmEmail, unlinkEmail, refresh],
   );
 
   return (
