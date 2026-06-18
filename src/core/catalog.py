@@ -24,6 +24,7 @@ class CatalogPlan:
     days: int
     usd: float
     rub: float
+    dent_inventory_item_id: str | None = None
 
     def to_purchase_dict(self) -> dict[str, Any]:
         gb_client: Any = "Безлимит" if self.gb == "unlimited" else (
@@ -75,6 +76,7 @@ def _catalog() -> tuple[dict[str, str], dict[tuple[str, str, int], CatalogPlan]]
             code_by_name[name_en] = code
 
         key = (code, gb_db, days)
+        dent_id = item.get("dent_inventory_item_id")
         plans_index[key] = CatalogPlan(
             name_en=name_en,
             name_ru=str(item.get("name_ru", name_en)),
@@ -83,6 +85,7 @@ def _catalog() -> tuple[dict[str, str], dict[tuple[str, str, int], CatalogPlan]]
             days=days,
             usd=usd,
             rub=rub,
+            dent_inventory_item_id=str(dent_id).strip() if dent_id else None,
         )
 
     return code_by_name, plans_index

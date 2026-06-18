@@ -52,7 +52,7 @@ from core.security import (  # noqa: E402
 )
 
 from core.security import optional_text  # noqa: E402
-from core.esim_profile import build_esim_fields  # noqa: E402
+from core.dent_provision import DentProvisionError, ProvisionResult, provision_dent_esim  # noqa: E402
 from api.payments.platega import (  # noqa: E402
     PLATEGA_PROVIDERS,
     PlategaError,
@@ -343,8 +343,74 @@ def plan_ref_from_body(body: dict[str, Any]) -> Any:
     )
 
 
-def esim_fields(esim_id: str, gb: Any) -> dict[str, Any]:
-    return build_esim_fields(esim_id, gb)
+def apply_dent_customer(user_id: int, provision: ProvisionResult) -> None:
+    if provision.dent_customer_uid:
+        STATE.db.update_user_settings(
+            user_id,
+            dent_customer_uid=provision.dent_customer_uid,
+            dent_profile_url=provision.dent_profile_url,
+        )
+
+
+def provision_purchase(
+    user: Any,
+    plan: Any,
+    order_id: str,
+    handler: BaseHTTPRequestHandler | None = None,
+) -> ProvisionResult:
+    try:
+        return provision_dent_esim(
+            STATE.db,
+            user_id=user.id,
+            order_id=order_id,
+            plan=plan,
+            user_ip=client_ip(handler) if handler else None,
+            user_country=plan.country_code,
+            inventory_override=plan.dent_inventory_item_id,
+        )
+    except DentProvisionError as exc:
+        raise SecurityError(str(exc)) from exc
+
+
+def complete_purchase_payment_intent(
+    intent: Any,
+    user: Any,
+    *,
+    payment_method: str,
+    payment_provider: str | None,
+    payment_ref: str | None = None,
+    handler: BaseHTTPRequestHandler | None = None,
+) -> Any:
+    if intent.kind != "purchase":
+        return STATE.db.complete_payment_intent(
+            intent.id,
+            user.id,
+            payment_method=payment_method,
+            payment_provider=payment_provider,
+            payment_ref=payment_ref,
+        )
+
+    plan = lookup_plan(
+        country_code=intent.country_code or "",
+        gb=intent.gb or "",
+        days=intent.days or 0,
+    )
+    order_id = secrets.token_hex(8)
+    esim_id = secrets.token_hex(8)
+    provision = provision_purchase(user, plan, order_id, handler)
+    completed = STATE.db.complete_payment_intent(
+        intent.id,
+        user.id,
+        payment_method=payment_method,
+        payment_provider=payment_provider,
+        payment_ref=payment_ref,
+        esim_fields=provision.esim_fields,
+        order_id=order_id,
+        esim_id=esim_id,
+        dent_inventory_item_id=provision.inventory_item_id,
+    )
+    apply_dent_customer(user.id, provision)
+    return completed
 
 
 def require_mock_payment_gateway() -> None:
@@ -378,9 +444,12 @@ def handle_platega_webhook(handler: BaseHTTPRequestHandler, body: dict[str, Any]
 
     if status == "CONFIRMED" and intent.status == "pending":
         try:
-            STATE.db.complete_payment_intent(
-                intent.id,
-                intent.user_id,
+            user = STATE.db.get_user_by_id(intent.user_id)
+            if user is None:
+                raise SecurityError("user not found")
+            complete_purchase_payment_intent(
+                intent,
+                user,
                 payment_method=intent.payment_method or "sbp",
                 payment_provider=intent.payment_provider,
                 payment_ref=str(tx_id),
@@ -388,6 +457,10 @@ def handle_platega_webhook(handler: BaseHTTPRequestHandler, body: dict[str, Any]
             logger.info("Platega payment confirmed for intent %s", intent.id)
         except ConflictError:
             pass
+        except SecurityError as exc:
+            logger.error("Platega provisioning failed for intent %s: %s", intent.id, exc)
+            json_response(handler, 500, {"error": safe_public_error(exc)})
+            return
 
     json_response(handler, 200, {"ok": True})
 
@@ -557,11 +630,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                     intent = STATE.db.get_payment_intent(intent_id, user.id)
                     if intent.status != "pending":
                         raise ConflictError("payment is not pending")
-                    completed = STATE.db.complete_payment_intent(
-                        intent.id,
-                        user.id,
+                    completed = complete_purchase_payment_intent(
+                        intent,
+                        user,
                         payment_method=method_name,
                         payment_provider=str(provider) if provider else None,
+                        handler=self,
                     )
                     payload = account_payload(user.id)
                     if completed.esim_id:
@@ -584,8 +658,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if path == "/api/account/purchase/balance":
                     plan = plan_ref_from_body(body)
                     purchase = plan.to_purchase_dict()
+                    user_row = STATE.db.get_user_by_id(user.id)
+                    if user_row is None:
+                        raise SecurityError("user not found")
+                    discount = STATE.db.referral_friend_discount_rate(user.id)
+                    effective = round(purchase["usd"] * (1.0 - discount), 2)
+                    if user_row.balance_usd < effective:
+                        json_response(self, 402, {"error": "insufficient balance"})
+                        return
                     esim_id = secrets.token_hex(8)
                     order_id = secrets.token_hex(8)
+                    provision = provision_purchase(user, plan, order_id, self)
                     try:
                         _order, esim = STATE.db.purchase_from_balance(
                             user_id=user.id,
@@ -597,11 +680,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                             days=purchase["days"],
                             amount_usd=purchase["usd"],
                             country_name_for_stats=purchase["name"],
-                            esim_fields=esim_fields(esim_id, purchase["gb"]),
+                            esim_fields=provision.esim_fields,
+                            dent_inventory_item_id=provision.inventory_item_id,
                         )
                     except InsufficientBalanceError:
                         json_response(self, 402, {"error": "insufficient balance"})
                         return
+                    apply_dent_customer(user.id, provision)
                     payload = account_payload(user.id)
                     payload["esimId"] = esim.id
                     json_response(self, 200, payload)

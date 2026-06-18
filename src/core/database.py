@@ -22,7 +22,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
-from core.esim_profile import build_esim_fields
 from core.security import (
     ESIM_STATUSES,
     ORDER_STATUSES,
@@ -43,7 +42,7 @@ from core.security import (
     validate_telegram_id,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 REFERRAL_COMMISSION_RATE = 0.10
 REFERRAL_FRIEND_DISCOUNT_RATE = 0.10
 
@@ -211,6 +210,7 @@ class Esim:
     dent_profile_domain_key: str | None = None
     dent_customer_profile_domain_id: str | None = None
     dent_esim_state: str | None = None
+    dent_customer_uid: str | None = None
     metatag: str | None = None
     is_active: bool = True
     created_at: str = ""
@@ -640,6 +640,7 @@ def _row_to_esim(row: sqlite3.Row) -> Esim:
         dent_profile_domain_key=row["dent_profile_domain_key"],
         dent_customer_profile_domain_id=row["dent_customer_profile_domain_id"],
         dent_esim_state=row["dent_esim_state"],
+        dent_customer_uid=row["dent_customer_uid"] if "dent_customer_uid" in row.keys() else None,
         metatag=row["metatag"],
         purchased_at=row["purchased_at"],
         activated_at=row["activated_at"],
@@ -764,6 +765,10 @@ class Database:
                         "CREATE INDEX IF NOT EXISTS idx_payment_intents_provider_ref "
                         "ON payment_intents(provider_ref)"
                     )
+                if current < 5:
+                    esim_cols = {r["name"] for r in conn.execute("PRAGMA table_info(esims)")}
+                    if "dent_customer_uid" not in esim_cols:
+                        conn.execute("ALTER TABLE esims ADD COLUMN dent_customer_uid TEXT")
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, isoformat()),
@@ -1213,6 +1218,7 @@ class Database:
         dent_profile_domain_key: str | None = None,
         dent_customer_profile_domain_id: str | None = None,
         dent_esim_state: str | None = None,
+        dent_customer_uid: str | None = None,
         metatag: str | None = None,
         purchased_at: str | None = None,
         activated_at: str | None = None,
@@ -1285,6 +1291,11 @@ class Database:
             if dent_esim_state is not None
             else None
         )
+        dent_customer_uid = (
+            optional_text(dent_customer_uid, max_len=128, field="dent_customer_uid")
+            if dent_customer_uid is not None
+            else None
+        )
         metatag = optional_text(metatag, max_len=255, field="metatag") if metatag is not None else None
         now = isoformat()
         purchased = purchased_at or now
@@ -1299,15 +1310,15 @@ class Database:
                     apple_universal_link, android_universal_link, installation_url,
                     data_remaining_gb, data_total_gb,
                     dent_activation_uid, dent_esim_uid, dent_profile_domain_key,
-                    dent_customer_profile_domain_id, dent_esim_state, metatag,
-                    purchased_at, activated_at, expires_at,
+                    dent_customer_profile_domain_id, dent_esim_state, dent_customer_uid,
+                    metatag, purchased_at, activated_at, expires_at,
                     created_at, updated_at
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?,
-                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?
                 )
@@ -1337,6 +1348,7 @@ class Database:
                     dent_profile_domain_key,
                     dent_customer_profile_domain_id,
                     dent_esim_state,
+                    dent_customer_uid,
                     metatag,
                     purchased,
                     activated_at,
@@ -1371,6 +1383,7 @@ class Database:
             "dent_profile_domain_key",
             "dent_customer_profile_domain_id",
             "dent_esim_state",
+            "dent_customer_uid",
             "metatag",
             "activated_at",
             "expires_at",
@@ -1437,6 +1450,21 @@ class Database:
         rows = self.connect().execute(query, params).fetchall()
         return [_row_to_esim(r) for r in rows]
 
+    def find_dent_topup_esim(self, user_id: int, country_code: str) -> Esim | None:
+        """Latest eSIM profile for the same country set, used for DENT top-ups."""
+        code = validate_country_code(country_code)
+        row = self.connect().execute(
+            """
+            SELECT * FROM esims
+            WHERE user_id = ? AND country_code = ?
+              AND iccid IS NOT NULL AND iccid != ''
+            ORDER BY purchased_at DESC
+            LIMIT 1
+            """,
+            (user_id, code),
+        ).fetchone()
+        return _row_to_esim(row) if row else None
+
     def list_orders(self, user_id: int, *, limit: int = 100) -> list[Order]:
         rows = self.connect().execute(
             """
@@ -1462,6 +1490,7 @@ class Database:
         amount_usd: float,
         country_name_for_stats: str | None = None,
         esim_fields: dict[str, Any] | None = None,
+        dent_inventory_item_id: str | None = None,
     ) -> tuple[Order, Esim]:
         """Atomic purchase: debit balance, create order + eSIM, bump country stats."""
         with self.transaction() as conn:
@@ -1484,6 +1513,7 @@ class Database:
                 amount_usd=effective,
                 payment_method="balance",
                 status="paid",
+                dent_inventory_item_id=dent_inventory_item_id,
                 conn=conn,
             )
             esim = self.create_esim(
@@ -1524,6 +1554,7 @@ class Database:
         payment_ref: str | None = None,
         country_name_for_stats: str | None = None,
         esim_fields: dict[str, Any] | None = None,
+        dent_inventory_item_id: str | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> tuple[Order, Esim]:
         def _run(db: sqlite3.Connection) -> tuple[Order, Esim]:
@@ -1539,6 +1570,7 @@ class Database:
                 payment_provider=payment_provider,
                 payment_ref=payment_ref,
                 status="paid",
+                dent_inventory_item_id=dent_inventory_item_id,
                 conn=db,
             )
             esim = self.create_esim(
@@ -2071,6 +2103,9 @@ class Database:
         payment_provider: str | None,
         payment_ref: str | None = None,
         esim_fields: dict[str, Any] | None = None,
+        order_id: str | None = None,
+        esim_id: str | None = None,
+        dent_inventory_item_id: str | None = None,
     ) -> PaymentIntent:
         intent_id = validate_record_id(intent_id, field="payment id")
         payment_method = validate_payment_method(payment_method)
@@ -2111,13 +2146,16 @@ class Database:
             elif intent.kind == "purchase":
                 if not intent.plan_name or not intent.country_code or intent.days is None:
                     raise ConflictError("invalid purchase intent")
-                order_id = secrets.token_hex(8)
-                esim_id = secrets.token_hex(8)
-                fields = esim_fields or build_esim_fields(esim_id, intent.gb or "")
+                if not esim_fields:
+                    raise ConflictError("eSIM provisioning is required")
+                purchase_order_id = order_id or secrets.token_hex(8)
+                purchase_esim_id = esim_id or secrets.token_hex(8)
+                order_id = purchase_order_id
+                esim_id = purchase_esim_id
                 self.purchase_external(
                     user_id=user_id,
-                    order_id=order_id,
-                    esim_id=esim_id,
+                    order_id=purchase_order_id,
+                    esim_id=purchase_esim_id,
                     name=intent.plan_name,
                     country_code=intent.country_code,
                     gb=intent.gb or "",
@@ -2127,7 +2165,8 @@ class Database:
                     payment_provider=payment_provider,
                     payment_ref=payment_ref or intent_id,
                     country_name_for_stats=intent.plan_name,
-                    esim_fields=fields,
+                    esim_fields=esim_fields,
+                    dent_inventory_item_id=dent_inventory_item_id,
                     conn=conn,
                 )
             else:
