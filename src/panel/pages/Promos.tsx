@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, formatDate, formatUsd, type PromoRow } from "../components/api";
+import { api, formatUsd, type PromoRow } from "../components/api";
 import { Btn, Card, ErrorBox, Input, Page, TableWrap, Td, Th } from "../components/ui";
 
 export default function Promos() {

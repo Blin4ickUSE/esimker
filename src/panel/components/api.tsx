@@ -133,6 +133,8 @@ export interface TableBrowse {
   table: string;
   total: number;
   items: Record<string, unknown>[];
+  offset: number;
+  limit: number;
 }
 
 interface AuthCtx {

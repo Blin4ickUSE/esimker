@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, formatDate, formatUsd } from "../components/api";
-import { ErrorBox, Page, TableWrap, Td, Th } from "../components/ui";
+import { Btn, ErrorBox, Page, TableWrap, Td, Th } from "../components/ui";
 
 export default function Orders() {
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
@@ -65,6 +65,14 @@ export default function Orders() {
           ))}
         </tbody>
       </TableWrap>
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <Btn variant="ghost" disabled={offset <= 0} onClick={() => load(offset - limit)}>
+          Назад
+        </Btn>
+        <Btn variant="ghost" disabled={offset + limit >= total} onClick={() => load(offset + limit)}>
+          Далее
+        </Btn>
+      </div>
     </Page>
   );
 }

@@ -38,12 +38,12 @@ export function TableWrap({ children }: { children: ReactNode }) {
   );
 }
 
-export function Th({ children }: { children: ReactNode }) {
-  return <th style={s.th}>{children}</th>;
+export function Th({ children }: { children?: ReactNode }) {
+  return <th style={s.th}>{children ?? "\u00a0"}</th>;
 }
 
-export function Td({ children }: { children: ReactNode }) {
-  return <td style={s.td}>{children}</td>;
+export function Td({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return <td style={{ ...s.td, ...style }}>{children}</td>;
 }
 
 export function Btn({
