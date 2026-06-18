@@ -374,13 +374,41 @@ ensure_env_file() {
 }
 
 generate_admin_credentials() {
+    local login password hash secret
+    local need_generate=0
+
     if env_is_set admin_password_hash && env_is_set admin_session_secret; then
-        log_success "  ✔ учётные данные панели"
+        case "${ESIMKER_RESET_PANEL_PASSWORD:-}" in
+            1|yes|true|TRUE)
+                need_generate=1
+                log_info "  Сброс пароля панели (ESIMKER_RESET_PANEL_PASSWORD)"
+                ;;
+            0|no|false|FALSE)
+                log_success "  ✔ учётные данные панели (без изменений)"
+                INSTALL_PANEL_LOGIN="$(env_get admin_login 2>/dev/null || echo admin)"
+                return
+                ;;
+            *)
+                section "Панель администратора"
+                hint "Пароль хранится только в виде хэша — восстановить нельзя"
+                if confirm "  Сгенерировать новый пароль и показать в конце? (y/n): "; then
+                    need_generate=1
+                else
+                    log_success "  ✔ учётные данные панели (без изменений)"
+                    INSTALL_PANEL_LOGIN="$(env_get admin_login 2>/dev/null || echo admin)"
+                    return
+                fi
+                ;;
+        esac
+    else
+        need_generate=1
+    fi
+
+    if [[ "$need_generate" -eq 0 ]]; then
         return
     fi
 
     section "Панель администратора"
-    local login password hash secret
     login="admin"
     password="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 16)"
     if ! command -v python3 >/dev/null 2>&1; then
@@ -1044,8 +1072,15 @@ print_summary() {
         printf "  URL:      ${CYAN}%s${NC}\n" "${panel_url:-—}"
         printf "  Логин:    ${CYAN}%s${NC}\n" "${INSTALL_PANEL_LOGIN:-admin}"
         printf "  Пароль:   ${CYAN}%s${NC}\n" "$INSTALL_PANEL_PASSWORD"
-        printf "  ${DIM}(пароль показывается один раз; хэш хранится в .env)${NC}\n"
+        printf "  ${DIM}(пароль в .env не хранится — только хэш)${NC}\n"
         unset INSTALL_PANEL_LOGIN INSTALL_PANEL_PASSWORD
+    elif [[ -n "$panel_url" ]] && env_is_set admin_password_hash; then
+        printf '\n'
+        printf "${BOLD}  Панель администратора:${NC}\n"
+        printf "  URL:      ${CYAN}%s${NC}\n" "$panel_url"
+        printf "  Логин:    ${CYAN}%s${NC}\n" "$(env_get admin_login 2>/dev/null || echo admin)"
+        printf "  ${DIM}Пароль уже задан. При следующем install.sh ответьте «y» на сброс пароля${NC}\n"
+        printf "  ${DIM}или запустите: ESIMKER_RESET_PANEL_PASSWORD=1 ./install.sh${NC}\n"
     fi
     printf '\n'
     printf "${BOLD}  Полезные команды:${NC}\n"
