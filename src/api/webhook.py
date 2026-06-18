@@ -53,6 +53,7 @@ from core.security import (  # noqa: E402
 
 from core.security import optional_text  # noqa: E402
 from core.dent_provision import DentProvisionError, ProvisionResult, provision_dent_esim  # noqa: E402
+from api.admin import handle_admin_request  # noqa: E402
 from api.payments.platega import (  # noqa: E402
     PLATEGA_PROVIDERS,
     PlategaError,
@@ -537,6 +538,20 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/health":
                 json_response(self, 200, {"ok": True})
+                return
+
+            admin_body: dict[str, Any] | None = None
+            if path.startswith("/api/admin") and method in ("POST", "PATCH", "PUT"):
+                admin_body = read_json(self)
+            if handle_admin_request(
+                self,
+                method,
+                path,
+                admin_body,
+                db=STATE.db,
+                json_response=json_response,
+                read_json=read_json,
+            ):
                 return
 
             if method == "GET" and path == "/api/config":

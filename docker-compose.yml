@@ -65,6 +65,25 @@ services:
       retries: 3
       start_period: 10s
 
+  panel:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.panel
+    ports:
+      - "${PANEL_HTTP_PORT:-8081}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   internal:
     driver: bridge

@@ -1,0 +1,25 @@
+FROM node:20-alpine AS frontend
+
+WORKDIR /app
+
+COPY src/panel/package.json ./src/panel/
+RUN cd src/panel && npm install
+
+COPY src/panel ./src/panel
+
+WORKDIR /app/src/panel
+RUN npm run build
+
+
+FROM nginx:1.27-alpine
+
+COPY deploy/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/nginx/conf.d/panel.conf /etc/nginx/conf.d/default.conf
+COPY --from=frontend /app/src/panel/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]
