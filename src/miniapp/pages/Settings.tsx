@@ -12,47 +12,10 @@ import {
   X,
 } from "lucide-react";
 import { useAccount, useI18n, paths, Screen, SectionLabel } from "../components/i18n";
+import { getLegalDoc, renderLegalMarkdown } from "../legal";
 
 const APP_VERSION = "v0.2 (beta)";
 const SUPPORT_URL = "https://t.me/esimkerteambot";
-
-const TERMS_EN = `Terms of Service
-
-Last updated: June 2026
-
-1. Service. esimker provides prepaid eSIM data plans for international travel. Plans are data-only unless stated otherwise.
-
-2. Eligibility. You must be able to enter into a binding agreement and use eSIM-compatible devices.
-
-3. Payments. All prices are shown in USD. Purchases are final except where required by applicable law.
-
-4. Activation. eSIM profiles must be installed and activated within the validity period stated at purchase.
-
-5. Fair use. Unlimited plans may be subject to fair-use policies by the underlying carrier.
-
-6. Liability. The service is provided "as is" to the extent permitted by law.
-
-7. Changes. We may update these terms; continued use constitutes acceptance of the revised terms.
-
-Contact: t.me/esimkerteambot`;
-
-const PRIVACY_EN = `Privacy Policy
-
-Last updated: June 2026
-
-1. Data we collect. We process account identifiers, purchase history, optional email address, and notification preferences.
-
-2. Purpose. Data is used to deliver eSIM services, process payments, send service-related messages, and improve the product.
-
-3. Sharing. We share data with payment processors and connectivity partners only as needed to provide the service.
-
-4. Retention. We retain data while your account is active and as required for legal obligations.
-
-5. Your choices. You may unlink your email and manage notification settings in the app.
-
-6. Security. We apply reasonable technical and organizational measures to protect your data.
-
-7. Contact. For privacy requests, contact t.me/esimkerteambot`;
 
 function Toggle({
   on,
@@ -83,7 +46,10 @@ function DocModal({ title, body, onClose }: { title: string; body: string; onClo
             <X size={18} />
           </button>
         </div>
-        <div style={s.modalBody}>{body}</div>
+        <div
+          style={s.modalBody}
+          dangerouslySetInnerHTML={{ __html: renderLegalMarkdown(body) }}
+        />
       </div>
     </div>
   );
@@ -91,7 +57,7 @@ function DocModal({ title, body, onClose }: { title: string; body: string; onClo
 
 export default function Settings() {
   const navigate = useNavigate();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { settings, updateSettings, unlinkEmail, confirmEmail } = useAccount();
   const data = settings;
   const [emailDraft, setEmailDraft] = useState("");
@@ -276,10 +242,18 @@ export default function Settings() {
       <div style={s.version}>{APP_VERSION}</div>
 
       {doc === "terms" && (
-        <DocModal title={t("settingsTerms")} body={TERMS_EN} onClose={() => setDoc(null)} />
+        <DocModal
+          title={t("settingsTerms")}
+          body={getLegalDoc(lang, "terms")}
+          onClose={() => setDoc(null)}
+        />
       )}
       {doc === "privacy" && (
-        <DocModal title={t("settingsPrivacy")} body={PRIVACY_EN} onClose={() => setDoc(null)} />
+        <DocModal
+          title={t("settingsPrivacy")}
+          body={getLegalDoc(lang, "privacy")}
+          onClose={() => setDoc(null)}
+        />
       )}
     </Screen>
   );
@@ -509,6 +483,5 @@ const s: Record<string, CSSProperties> = {
     fontSize: "var(--fs-sm)",
     color: "var(--text-soft)",
     lineHeight: 1.55,
-    whiteSpace: "pre-wrap",
   },
 };
