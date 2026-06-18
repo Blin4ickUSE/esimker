@@ -765,6 +765,10 @@ class Database:
                         conn.execute("ALTER TABLE esims ADD COLUMN dent_customer_uid TEXT")
                 if current < 6:
                     conn.execute(
+                        "DELETE FROM promo_redemptions "
+                        "WHERE promo_code IN ('WELCOME300', 'ESIM500')"
+                    )
+                    conn.execute(
                         "DELETE FROM promo_codes WHERE code IN ('WELCOME300', 'ESIM500')"
                     )
                 conn.execute(

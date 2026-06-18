@@ -152,7 +152,11 @@ def fetch_bot_username(token: str) -> str | None:
 class ApiState:
     def __init__(self) -> None:
         self.db = Database()
-        self.db.init()
+        try:
+            self.db.init()
+        except Exception:
+            logger.exception("Database init failed")
+            raise
         self.bot_token = os.getenv("telegram_bot_token", "").strip()
         env_username = os.getenv("telegram_bot_username", "").strip().lstrip("@")
         self.bot_username = env_username or fetch_bot_username(self.bot_token) or ""
