@@ -1,10 +1,10 @@
-import type { CSSProperties } from "react";
-import { useState } from "react";
-import { Navigate } from "react-router-dom";
+import { useState, type CSSProperties } from "react";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../components/api";
 import { Btn, Card, ErrorBox, Input } from "../components/ui";
 
 export default function Login() {
+  const navigate = useNavigate();
   const { token, signIn, ready } = useAuth();
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
@@ -19,6 +19,7 @@ export default function Login() {
     setLoading(true);
     try {
       await signIn(login.trim(), password);
+      navigate("/", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка входа");
     } finally {
@@ -38,7 +39,13 @@ export default function Login() {
           <Input value={login} onChange={setLogin} placeholder="admin" />
           <label style={s.label}>Пароль</label>
           <Input value={password} onChange={setPassword} type="password" placeholder="••••••••" />
-          <Btn disabled={loading || !login || !password}>{loading ? "Вход…" : "Войти"}</Btn>
+          <Btn
+            type="submit"
+            disabled={loading || !login.trim() || !password}
+            style={{ width: "100%", marginTop: 16, padding: "12px 14px" }}
+          >
+            {loading ? "Вход…" : "Войти"}
+          </Btn>
         </form>
       </Card>
     </div>

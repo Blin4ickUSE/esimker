@@ -51,15 +51,24 @@ export function Btn({
   onClick,
   variant = "primary",
   disabled,
+  type = "button",
+  style,
 }: {
   children: ReactNode;
   onClick?: () => void;
   variant?: "primary" | "ghost" | "danger";
   disabled?: boolean;
+  type?: "button" | "submit" | "reset";
+  style?: CSSProperties;
 }) {
-  const style = variant === "primary" ? s.btn : variant === "danger" ? s.btnDanger : s.btnGhost;
+  const base = variant === "primary" ? s.btn : variant === "danger" ? s.btnDanger : s.btnGhost;
   return (
-    <button type="button" style={style} onClick={onClick} disabled={disabled}>
+    <button
+      type={type}
+      style={{ ...base, ...(disabled ? s.btnDisabled : null), ...style }}
+      onClick={onClick}
+      disabled={disabled}
+    >
       {children}
     </button>
   );
@@ -134,6 +143,10 @@ const s: Record<string, CSSProperties> = {
     fontWeight: 700,
     cursor: "pointer",
     fontSize: 14,
+  },
+  btnDisabled: {
+    opacity: 0.45,
+    cursor: "not-allowed",
   },
   btnGhost: {
     border: "1px solid #333",
