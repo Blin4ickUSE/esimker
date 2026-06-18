@@ -42,7 +42,7 @@ from core.security import (
     validate_telegram_id,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 REFERRAL_COMMISSION_RATE = 0.10
 REFERRAL_FRIEND_DISCOUNT_RATE = 0.10
 
@@ -582,12 +582,6 @@ _SEED_POPULAR = (
     "Vietnam",
 )
 
-_SEED_PROMOS = (
-    ("WELCOME300", 5.0),
-    ("ESIM500", 7.0),
-)
-
-
 def _row_to_user(row: sqlite3.Row) -> User:
     return User(
         id=row["id"],
@@ -769,19 +763,13 @@ class Database:
                     esim_cols = {r["name"] for r in conn.execute("PRAGMA table_info(esims)")}
                     if "dent_customer_uid" not in esim_cols:
                         conn.execute("ALTER TABLE esims ADD COLUMN dent_customer_uid TEXT")
+                if current < 6:
+                    conn.execute(
+                        "DELETE FROM promo_codes WHERE code IN ('WELCOME300', 'ESIM500')"
+                    )
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, isoformat()),
-                )
-            now = isoformat()
-            for code, credit in _SEED_PROMOS:
-                conn.execute(
-                    """
-                    INSERT INTO promo_codes (code, credit_usd, max_uses_per_user, active, created_at)
-                    VALUES (?, ?, 1, 1, ?)
-                    ON CONFLICT(code) DO NOTHING
-                    """,
-                    (code, credit, now),
                 )
 
     # --- Users ---

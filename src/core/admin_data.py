@@ -159,7 +159,7 @@ class AdminData:
             ],
             "usedPromos": self._db.list_used_promos(user_id),
             "countryStats": {
-                k: v.to_dict() for k, v in self._db.list_country_stats(user_id).items()
+                k: asdict(v) for k, v in self._db.list_country_stats(user_id).items()
             },
             "referralEarnings": [
                 asdict(e) for e in self._db.list_referral_earnings(user_id, limit=100)

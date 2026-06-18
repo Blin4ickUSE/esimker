@@ -143,33 +143,38 @@ export default function Detail({ country }: { country: string }) {
   const plan = plans[Math.min(selected, plans.length - 1)];
 
   const [paying, setPaying] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const onPay = () => {
+  const executePurchase = async () => {
     if (!plan || paying) return;
-    requireAuth(async () => {
-      if (balanceUsd >= plan.usd) {
-        setPaying(true);
-        try {
-          const esim = await buy(plan);
-          if (esim) navigate(paths.esim(esim.id));
-        } finally {
-          setPaying(false);
-        }
-        return;
-      }
+    setConfirmOpen(false);
+    if (balanceUsd >= plan.usd) {
       setPaying(true);
       try {
-        const intent = await createPaymentIntent({
-          kind: "purchase",
-          country_code: plan.code,
-          gb: plan.gb,
-          days: plan.days,
-        });
-        navigate(paths.payment(intent.id));
+        const esim = await buy(plan);
+        if (esim) navigate(paths.esim(esim.id));
       } finally {
         setPaying(false);
       }
-    });
+      return;
+    }
+    setPaying(true);
+    try {
+      const intent = await createPaymentIntent({
+        kind: "purchase",
+        country_code: plan.code,
+        gb: plan.gb,
+        days: plan.days,
+      });
+      navigate(paths.payment(intent.id));
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  const onPay = () => {
+    if (!plan || paying) return;
+    requireAuth(() => setConfirmOpen(true));
   };
 
   const planLabel = (p: Plan) =>
@@ -255,13 +260,27 @@ export default function Detail({ country }: { country: string }) {
       </div>
 
       <div style={s.payBar}>
-        <button style={s.payBtn} onClick={onPay} disabled={!plan}>
+        <button style={s.payBtn} onClick={onPay} disabled={!plan || paying}>
           <span style={s.payText}>
-            {t("pay")}
-            {plan ? ` · ${formatUsd(plan.usd)}` : ""}
+            {paying
+              ? t("payLoading")
+              : `${t("pay")}${plan ? ` · ${formatUsd(plan.usd)}` : ""}`}
           </span>
         </button>
       </div>
+
+      {confirmOpen && plan && (
+        <ConfirmPurchaseModal
+          country={country}
+          planLabel={planLabel(plan)}
+          price={plan.usd}
+          fromBalance={balanceUsd >= plan.usd}
+          paying={paying}
+          t={t}
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => void executePurchase()}
+        />
+      )}
     </div>
   );
 }
@@ -289,6 +308,59 @@ function InfoRow({ icon, text }: { icon: ReactNode; text: string }) {
     <div style={s.iRow}>
       <span style={s.iIcon}>{icon}</span>
       <span>{text}</span>
+    </div>
+  );
+}
+
+function ConfirmPurchaseModal({
+  country,
+  planLabel,
+  price,
+  fromBalance,
+  paying,
+  t,
+  onCancel,
+  onConfirm,
+}: {
+  country: string;
+  planLabel: string;
+  price: number;
+  fromBalance: boolean;
+  paying: boolean;
+  t: (k: StringKey) => string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div style={s.modalBackdrop} onClick={onCancel}>
+      <div style={s.confirmModal} onClick={(e) => e.stopPropagation()}>
+        <div style={s.modalTitle}>{t("payConfirmTitle")}</div>
+        <div style={s.confirmBody}>
+          <div style={s.confirmRow}>
+            <span style={s.confirmLabel}>{t("payConfirmCountry")}</span>
+            <span style={s.confirmValue}>{country}</span>
+          </div>
+          <div style={s.confirmRow}>
+            <span style={s.confirmLabel}>{t("payConfirmPlan")}</span>
+            <span style={s.confirmValue}>{planLabel}</span>
+          </div>
+          <div style={s.confirmRow}>
+            <span style={s.confirmLabel}>{t("payAmount")}</span>
+            <span style={s.confirmPrice}>{formatUsd(price)}</span>
+          </div>
+          <div style={s.confirmHint}>
+            {fromBalance ? t("payConfirmFromBalance") : t("payConfirmToPayment")}
+          </div>
+        </div>
+        <div style={s.confirmActions}>
+          <button type="button" style={s.confirmCancel} onClick={onCancel} disabled={paying}>
+            {t("payConfirmCancel")}
+          </button>
+          <button type="button" style={s.confirmOk} onClick={onConfirm} disabled={paying}>
+            {paying ? t("payLoading") : t("payConfirm")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -465,6 +537,78 @@ const s: Record<string, CSSProperties> = {
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
+  },
+
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,.55)",
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    padding: 16,
+    zIndex: 100,
+  },
+  confirmModal: {
+    width: "100%",
+    maxWidth: "var(--maxw)",
+    background: "var(--surface)",
+    border: "1px solid var(--line)",
+    borderRadius: "var(--r-xl)",
+    padding: "18px 16px 16px",
+  },
+  modalTitle: {
+    fontSize: "var(--fs-lg)",
+    fontWeight: 700,
+    marginBottom: 14,
+  },
+  confirmBody: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    marginBottom: 16,
+  },
+  confirmRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 12,
+    fontSize: "var(--fs-md)",
+  },
+  confirmLabel: { color: "var(--text-dim)" },
+  confirmValue: { fontWeight: 600, textAlign: "right" },
+  confirmPrice: { fontWeight: 700, fontSize: "var(--fs-lg)" },
+  confirmHint: {
+    marginTop: 4,
+    fontSize: "var(--fs-sm)",
+    color: "var(--text-soft)",
+    lineHeight: 1.45,
+  },
+  confirmActions: {
+    display: "flex",
+    gap: 10,
+  },
+  confirmCancel: {
+    flex: 1,
+    padding: 14,
+    borderRadius: "var(--r-lg)",
+    border: "1px solid var(--line-strong)",
+    background: "var(--surface-2)",
+    color: "var(--text)",
+    fontSize: "var(--fs-md)",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  confirmOk: {
+    flex: 1,
+    padding: 14,
+    borderRadius: "var(--r-lg)",
+    border: "none",
+    background: "linear-gradient(135deg,var(--accent),var(--accent-2))",
+    color: "var(--accent-ink)",
+    fontSize: "var(--fs-md)",
+    fontWeight: 700,
+    cursor: "pointer",
   },
 
   blocked: {

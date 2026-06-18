@@ -22,14 +22,16 @@ function MethodRow({
   label,
   onClick,
   chevron = true,
+  disabled = false,
 }: {
   icon: ReactNode;
   label: string;
   onClick: () => void;
   chevron?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <button type="button" style={s.methodRow} onClick={onClick}>
+    <button type="button" style={{ ...s.methodRow, ...(disabled ? s.rowDisabled : null) }} onClick={onClick} disabled={disabled}>
       <span style={s.methodIcon}>{icon}</span>
       <span style={s.methodLabel}>{label}</span>
       {chevron && <ChevronRight size={18} color="var(--text-dim)" />}
@@ -37,9 +39,9 @@ function MethodRow({
   );
 }
 
-function CoinRow({ label, onClick }: { label: string; onClick: () => void }) {
+function CoinRow({ label, onClick, disabled = false }: { label: string; onClick: () => void; disabled?: boolean }) {
   return (
-    <button type="button" style={s.coinRow} onClick={onClick}>
+    <button type="button" style={{ ...s.coinRow, ...(disabled ? s.rowDisabled : null) }} onClick={onClick} disabled={disabled}>
       <span style={s.coinLabel}>{label}</span>
       <ChevronRight size={16} color="var(--text-dim)" />
     </button>
@@ -184,6 +186,8 @@ export default function Payment() {
           <div style={s.amountValue}>{formatUsd(amount)}</div>
         </div>
 
+        {busy && <div style={s.busyBanner}>{t("payLoading")}</div>}
+
         {step === "methods" ? (
           <div style={s.list}>
             <MethodRow
@@ -191,40 +195,45 @@ export default function Payment() {
               label={t("paySbp")}
               onClick={() => complete("sbp")}
               chevron={false}
+              disabled={busy}
             />
             <MethodRow
               icon={<img src={cardRuImg} alt="" style={s.img} />}
               label={t("payCardRu")}
               onClick={() => complete("card_ru")}
               chevron={false}
+              disabled={busy}
             />
             <MethodRow
               icon={<img src={cardImg} alt="" style={s.img} />}
               label={t("payCardIntl")}
               onClick={() => complete("card_intl")}
               chevron={false}
+              disabled={busy}
             />
             <MethodRow
               icon={<span style={s.cryptoIcon}>₿</span>}
               label={t("payCrypto")}
               onClick={() => setStep("crypto")}
+              disabled={busy}
             />
             <MethodRow
               icon={<img src={cryptobotImg} alt="" style={s.img} />}
               label={t("payCryptobot")}
               onClick={() => complete("cryptobot")}
               chevron={false}
+              disabled={busy}
             />
           </div>
         ) : (
           <div style={s.list}>
             <div style={s.netLabel}>{t("payCryptoTon")}</div>
-            <CoinRow label="USDT" onClick={() => complete("ton_usdt")} />
-            <CoinRow label="GRAM" onClick={() => complete("ton_gram")} />
+            <CoinRow label="USDT" onClick={() => complete("ton_usdt")} disabled={busy} />
+            <CoinRow label="GRAM" onClick={() => complete("ton_gram")} disabled={busy} />
             <div style={s.divider} />
             <div style={s.netLabel}>{t("payCryptoTrc20")}</div>
-            <CoinRow label="USDT" onClick={() => complete("trc20_usdt")} />
-            <CoinRow label="TRX" onClick={() => complete("trc20_trx")} />
+            <CoinRow label="USDT" onClick={() => complete("trc20_usdt")} disabled={busy} />
+            <CoinRow label="TRX" onClick={() => complete("trc20_trx")} disabled={busy} />
           </div>
         )}
       </div>
@@ -370,6 +379,21 @@ const s: Record<string, CSSProperties> = {
     textAlign: "left",
   },
   coinLabel: { fontSize: "var(--fs-lg)", fontWeight: 600 },
+
+  busyBanner: {
+    textAlign: "center",
+    padding: "10px 12px",
+    marginBottom: 12,
+    borderRadius: "var(--r-lg)",
+    background: "var(--chip)",
+    color: "var(--accent)",
+    fontSize: "var(--fs-md)",
+    fontWeight: 600,
+  },
+  rowDisabled: {
+    opacity: 0.55,
+    cursor: "default",
+  },
 
   missing: {
     textAlign: "center",
