@@ -721,6 +721,8 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
     if "id" not in user_cols:
         return
 
+    conn.execute("PRAGMA foreign_keys = OFF")
+
     id_map_rows = conn.execute("SELECT id, telegram_id FROM users").fetchall()
     id_to_tg = {int(r["id"]): int(r["telegram_id"]) for r in id_map_rows}
 
@@ -842,6 +844,8 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE users ADD COLUMN notify_subscription INTEGER NOT NULL DEFAULT 1"
         )
+
+    conn.execute("PRAGMA foreign_keys = ON")
 
 
 class Database:
