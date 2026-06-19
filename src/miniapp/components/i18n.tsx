@@ -221,7 +221,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, [lang]);
 
   useEffect(() => {
-    const tg = window.Telegram?.WebApp as { onEvent?: (e: string, cb: () => void) => void } | undefined;
+    const tg = window.Telegram?.WebApp;
     const sync = () => {
       if (!localStorage.getItem(LANG_KEY)) setLang(detectLang());
     };
@@ -396,7 +396,7 @@ const ThemeCtx = createContext<ThemeCtx | null>(null);
 const THEME_KEY = "esimker.theme";
 
 function detectTheme(): ThemeName {
-  const tgScheme = (window.Telegram?.WebApp as { colorScheme?: string } | undefined)?.colorScheme;
+  const tgScheme = window.Telegram?.WebApp?.colorScheme;
   if (tgScheme === "dark" || tgScheme === "light") return tgScheme;
   if (window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
   return "dark";
@@ -423,7 +423,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       if (!localStorage.getItem(THEME_KEY)) setTheme(detectTheme());
     };
     mq.addEventListener("change", onMq);
-    const tg = window.Telegram?.WebApp as { onEvent?: (e: string, cb: () => void) => void } | undefined;
+    const tg = window.Telegram?.WebApp;
     const onTgTheme = () => setTheme(detectTheme());
     tg?.onEvent?.("themeChanged", onTgTheme);
     return () => {
@@ -633,12 +633,14 @@ declare global {
       WebApp?: {
         initData?: string;
         initDataUnsafe?: {
-          user?: { id?: number };
+          user?: { id?: number; language_code?: string };
           start_param?: string;
         };
+        colorScheme?: "dark" | "light";
         ready?: () => void;
         expand?: () => void;
         openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
+        onEvent?: (event: string, callback: () => void) => void;
       };
     };
   }
