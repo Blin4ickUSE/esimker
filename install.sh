@@ -771,19 +771,46 @@ nginx_test_and_reload() {
     sudo systemctl reload nginx
 }
 
-ensure_main_nginx_config() {
-    if [[ -f "$NGINX_CONF" ]]; then
-        return 0
+ssl_cert_valid_for_days() {
+    local domain="$1"
+    local days="${2:-7}"
+    local cert="/etc/letsencrypt/live/${domain}/fullchain.pem"
+    [[ -f "$cert" ]] || return 1
+    openssl x509 -checkend "$((days * 86400))" -noout -in "$cert" 2>/dev/null
+}
+
+renew_ssl_certificates() {
+    command -v certbot >/dev/null 2>&1 || return 0
+    log_info "\nПроверка продления SSL-сертификатов"
+    if sudo certbot renew --quiet --no-random-sleep-on-renew 2>/dev/null; then
+        log_success "  ✔ certbot renew выполнен"
+    else
+        log_warn "  certbot renew не выполнен (возможно, ещё рано)"
     fi
-    local domain http_port ssl_port
+}
+
+ensure_main_nginx_config() {
+    local domain http_port ssl_port email
     domain="$(env_get DOMAIN 2>/dev/null || true)"
     [[ -n "$domain" ]] || return 0
+
     http_port="$(env_get HTTP_PORT 2>/dev/null || true)"
     http_port="${http_port:-$DEFAULT_HTTP_PORT}"
     ssl_port="$(nginx_read_ssl_port 2>/dev/null || true)"
     ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
-    log_warn "  Восстанавливаем основной nginx-конфиг для ${domain}"
+    email="$(env_get SSL_EMAIL 2>/dev/null || true)"
+    email="${email:-admin@${domain}}"
+
+    if [[ ! -f "$NGINX_CONF" ]]; then
+        log_warn "  Восстанавливаем основной nginx-конфиг для ${domain}"
+    fi
+
+    issue_certificates "$domain" "$email"
     write_nginx_config "$domain" "$ssl_port" "$http_port"
+
+    if ! env_is_set MINIAPP_URL; then
+        env_set MINIAPP_URL "$(url_with_port "$domain" "$ssl_port")"
+    fi
 }
 
 write_nginx_config() {
@@ -1135,22 +1162,27 @@ issue_certificates() {
 
     sudo mkdir -p "$CERTBOT_WEBROOT"
 
-    if [[ -d "/etc/letsencrypt/live/${domain}" ]]; then
-        log_success "  ✔ SSL-сертификат для ${domain} уже есть"
+    if [[ -d "/etc/letsencrypt/live/${domain}" ]] && ssl_cert_valid_for_days "$domain" 7; then
+        log_success "  ✔ SSL-сертификат для ${domain} действителен"
         return
     fi
 
-    log_info "  Получение сертификата Let's Encrypt для ${domain}..."
+    if [[ -d "/etc/letsencrypt/live/${domain}" ]]; then
+        log_warn "  SSL для ${domain} истекает или просрочен — перевыпуск..."
+    else
+        log_info "  Получение сертификата Let's Encrypt для ${domain}..."
+    fi
 
     local temp_conf="/tmp/${PROJECT_NAME}_certbot_${domain}.conf"
     local restore_link=""
-    if [[ -L "$NGINX_LINK" ]]; then
+    if [[ -L "$NGINX_LINK" ]] && [[ -e "$NGINX_LINK" ]]; then
         restore_link="$(readlink -f "$NGINX_LINK" 2>/dev/null || readlink "$NGINX_LINK" 2>/dev/null || true)"
     fi
 
     sudo tee "$temp_conf" >/dev/null <<EOF
 server {
     listen 80;
+    listen [::]:80;
     server_name ${domain};
     location /.well-known/acme-challenge/ {
         root ${CERTBOT_WEBROOT};
@@ -1165,20 +1197,21 @@ EOF
     sudo ln -sf "$temp_conf" "$NGINX_LINK"
     nginx_test_and_reload
 
-    sudo certbot certonly --webroot \
-        -w "$CERTBOT_WEBROOT" \
-        -d "$domain" \
-        --email "$email" \
-        --agree-tos \
-        --non-interactive
+    local certbot_args=(certonly --webroot -w "$CERTBOT_WEBROOT" -d "$domain" --email "$email" --agree-tos --non-interactive)
+    if [[ -d "/etc/letsencrypt/live/${domain}" ]]; then
+        certbot_args+=(--force-renewal)
+    fi
+    sudo certbot "${certbot_args[@]}"
 
     sudo rm -f "$temp_conf"
     if [[ -n "$restore_link" && -f "$restore_link" ]]; then
         sudo ln -sf "$restore_link" "$NGINX_LINK"
-        nginx_test_and_reload
+    else
+        sudo rm -f "$NGINX_LINK"
     fi
+    nginx_test_and_reload
 
-    log_success "  ✔ Сертификат получен"
+    log_success "  ✔ Сертификат для ${domain} готов"
 }
 
 start_containers() {
@@ -1306,15 +1339,18 @@ run_update() {
     ssl_port="$(nginx_read_ssl_port 2>/dev/null || true)"
     ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
 
+    if [[ -n "$domain" ]]; then
+        env_set MINIAPP_URL "$(url_with_port "$domain" "$ssl_port")"
+    fi
+
+    renew_ssl_certificates
     ensure_main_nginx_config
     ensure_webhook_infrastructure
     ensure_api_infrastructure
     ensure_panel_infrastructure
     start_containers
 
-    if [[ -f "$NGINX_CONF" || -f "$NGINX_WEBHOOK_CONF" || -f "$NGINX_API_CONF" || -L "$NGINX_LINK" ]]; then
-        nginx_test_and_reload
-    fi
+    nginx_test_and_reload
 
     if [[ -z "$domain" && -f ".env" ]]; then
         domain="$(grep -m1 '^DOMAIN=' .env | cut -d= -f2- | tr -d '\r' || true)"
