@@ -49,7 +49,7 @@ export default function Orders() {
               <Td>{String(o.id)}</Td>
               <Td>
                 <Link to={`/users/${o.user_id}`} style={{ color: "#ff8c1a" }}>
-                  #{String(o.user_id)} @{String(o.username || "—")}
+                  {String(o.telegram_id ?? o.user_id)}
                 </Link>
               </Td>
               <Td>{String(o.name)}</Td>

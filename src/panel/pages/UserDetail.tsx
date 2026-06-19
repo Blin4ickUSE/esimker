@@ -46,16 +46,15 @@ export default function UserDetail() {
 
   return (
     <Page
-      title={`Пользователь #${userId}`}
+      title={`Пользователь ${userId}`}
       actions={<Link to="/users" style={{ color: "#ff8c1a", fontSize: 14 }}>← к списку</Link>}
     >
       {error && <ErrorBox text={error} />}
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 12, fontSize: 14 }}>
-          <div><b>Telegram:</b> {String(u.telegram_id)}</div>
-          <div><b>Username:</b> @{String(u.username || "—")}</div>
+          <div><b>Telegram ID:</b> {String(u.telegram_id)}</div>
           <div><b>Email:</b> {String(u.email || "—")}</div>
-          <div><b>Баланс:</b> {formatUsd(Number(u.balance_usd))}</div>
+          <div><b>Баланс:</b> {formatUsd(Number(u.balance))}</div>
           <div><b>Реф. код:</b> {String(u.referral_code)}</div>
           <div><b>Создан:</b> {formatDate(String(u.created_at))}</div>
         </div>

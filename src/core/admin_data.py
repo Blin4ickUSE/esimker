@@ -22,7 +22,9 @@ ADMIN_TABLES = frozenset(
         "referral_earnings",
         "country_stats",
         "payment_intents",
-        "popular_destinations",
+        "api_clients",
+        "broadcasts",
+        "esim_alert_sent",
         "schema_migrations",
     }
 )
@@ -46,7 +48,7 @@ class AdminData:
                 "SELECT COALESCE(SUM(amount_usd), 0) FROM orders WHERE status = 'paid'"
             ).fetchone()[0]
         )
-        balance_total = float(conn.execute("SELECT COALESCE(SUM(balance_usd), 0) FROM users").fetchone()[0])
+        balance_total = float(conn.execute("SELECT COALESCE(SUM(balance), 0) FROM users").fetchone()[0])
         pending_payments = int(
             conn.execute(
                 "SELECT COUNT(*) FROM payment_intents WHERE status = 'pending'"
@@ -117,23 +119,22 @@ class AdminData:
         if q:
             where = """
                 WHERE CAST(telegram_id AS TEXT) LIKE ?
-                   OR username LIKE ?
                    OR email LIKE ?
                    OR referral_code LIKE ?
-                   OR CAST(id AS TEXT) = ?
+                   OR CAST(telegram_id AS TEXT) = ?
             """
             like = f"%{q}%"
-            params.extend([like, like, like, like, q])
+            params.extend([like, like, like, q])
 
         total = int(conn.execute(f"SELECT COUNT(*) FROM users {where}", params).fetchone()[0])
         rows = conn.execute(
             f"""
-            SELECT id, telegram_id, username, first_name, last_name, email, email_verified,
-                   balance_usd, referral_code, referral_count, referral_earned_usd,
+            SELECT telegram_id, email, email_verified,
+                   balance, referral_code, referral_count, referral_earned_usd,
                    is_blocked, created_at, last_opened_at
             FROM users
             {where}
-            ORDER BY id DESC
+            ORDER BY telegram_id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, limit, offset],
@@ -145,36 +146,36 @@ class AdminData:
             "limit": limit,
         }
 
-    def get_user_detail(self, user_id: int) -> dict[str, Any]:
-        user = self._db.get_user_by_id(user_id)
+    def get_user_detail(self, telegram_id: int) -> dict[str, Any]:
+        user = self._db.get_user(telegram_id)
         if user is None:
             raise NotFoundError("user not found")
-        snapshot = self._db.get_account_snapshot(user_id)
+        snapshot = self._db.get_account_snapshot(telegram_id)
         return {
             "user": user.to_dict(),
-            "esims": [e.to_dict() for e in self._db.list_esims(user_id, active_only=False)],
-            "orders": [o.to_dict() for o in self._db.list_orders(user_id, limit=200)],
+            "esims": [e.to_dict() for e in self._db.list_esims(telegram_id, active_only=False)],
+            "orders": [o.to_dict() for o in self._db.list_orders(telegram_id, limit=200)],
             "balanceTransactions": [
-                asdict(t) for t in self._db.list_balance_transactions(user_id, limit=200)
+                asdict(t) for t in self._db.list_balance_transactions(telegram_id, limit=200)
             ],
-            "usedPromos": self._db.list_used_promos(user_id),
+            "usedPromos": self._db.list_used_promos(telegram_id),
             "countryStats": {
-                k: asdict(v) for k, v in self._db.list_country_stats(user_id).items()
+                k: asdict(v) for k, v in self._db.list_country_stats(telegram_id).items()
             },
             "referralEarnings": [
-                asdict(e) for e in self._db.list_referral_earnings(user_id, limit=100)
+                asdict(e) for e in self._db.list_referral_earnings(telegram_id, limit=100)
             ],
-            "referredUsers": [asdict(r) for r in self._db.list_referred_users(user_id)],
+            "referredUsers": [asdict(r) for r in self._db.list_referred_users(telegram_id)],
             "referrer": (
-                self._db.get_referrer(user_id).to_dict()
-                if self._db.get_referrer(user_id)
+                self._db.get_referrer(telegram_id).to_dict()
+                if self._db.get_referrer(telegram_id)
                 else None
             ),
             "account": snapshot.to_client_dict(),
         }
 
-    def patch_user(self, user_id: int, body: dict[str, Any]) -> dict[str, Any]:
-        user = self._db.get_user_by_id(user_id)
+    def patch_user(self, telegram_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        user = self._db.get_user(telegram_id)
         if user is None:
             raise NotFoundError("user not found")
 
@@ -182,18 +183,18 @@ class AdminData:
             blocked = bool(body["isBlocked"])
             with self._db.transaction() as conn:
                 conn.execute(
-                    "UPDATE users SET is_blocked = ?, updated_at = ? WHERE id = ?",
-                    (int(blocked), isoformat(), user_id),
+                    "UPDATE users SET is_blocked = ?, updated_at = ? WHERE telegram_id = ?",
+                    (int(blocked), isoformat(), telegram_id),
                 )
 
         if "balanceDelta" in body:
             delta = validate_money(body["balanceDelta"], field="balanceDelta")
             note = str(body.get("note", "admin adjustment"))[:255]
             self._db.adjust_balance(
-                user_id,
+                telegram_id,
                 delta,
                 kind="adjustment",
-                reference_id=f"admin-{user_id}",
+                reference_id=f"admin-{telegram_id}",
                 note=note,
             )
 
@@ -205,18 +206,19 @@ class AdminData:
             if isinstance(notifications, dict):
                 prefs = NotificationPrefs(
                     news=bool(notifications.get("news", True)),
-                    marketing=bool(notifications.get("marketing", False)),
+                    marketing=bool(notifications.get("marketing", True)),
                     traffic=bool(notifications.get("traffic", True)),
+                    subscription=bool(notifications.get("subscription", True)),
                 )
             email = body.get("email")
             self._db.update_user_settings(
-                user_id,
+                telegram_id,
                 email=str(email) if email is not None else None,
                 email_verified=bool(body.get("emailVerified")) if "emailVerified" in body else None,
                 notifications=prefs,
             )
 
-        return self.get_user_detail(user_id)
+        return self.get_user_detail(telegram_id)
 
     def list_orders(
         self,
@@ -236,9 +238,9 @@ class AdminData:
         total = int(conn.execute(f"SELECT COUNT(*) FROM orders {where}", params).fetchone()[0])
         rows = conn.execute(
             f"""
-            SELECT o.*, u.telegram_id, u.username
+            SELECT o.*, u.telegram_id
             FROM orders o
-            JOIN users u ON u.id = o.user_id
+            JOIN users u ON u.telegram_id = o.user_id
             {where}
             ORDER BY o.created_at DESC
             LIMIT ? OFFSET ?
@@ -263,25 +265,20 @@ class AdminData:
         if q:
             where = """
                 WHERE e.iccid LIKE ? OR e.id = ? OR CAST(e.user_id AS TEXT) = ?
-                      OR u.username LIKE ?
             """
             like = f"%{q}%"
-            params.extend([like, q, q, like])
+            params.extend([like, q, q])
         total = int(
             conn.execute(
-                f"""
-                SELECT COUNT(*) FROM esims e
-                JOIN users u ON u.id = e.user_id
-                {where}
-                """,
+                f"SELECT COUNT(*) FROM esims e {where}",
                 params,
             ).fetchone()[0]
         )
         rows = conn.execute(
             f"""
-            SELECT e.*, u.telegram_id, u.username
+            SELECT e.*, u.telegram_id
             FROM esims e
-            JOIN users u ON u.id = e.user_id
+            JOIN users u ON u.telegram_id = e.user_id
             {where}
             ORDER BY e.purchased_at DESC
             LIMIT ? OFFSET ?
@@ -323,9 +320,9 @@ class AdminData:
         total = int(conn.execute(f"SELECT COUNT(*) FROM payment_intents p {where}", params).fetchone()[0])
         rows = conn.execute(
             f"""
-            SELECT p.*, u.telegram_id, u.username
+            SELECT p.*, u.telegram_id
             FROM payment_intents p
-            JOIN users u ON u.id = p.user_id
+            JOIN users u ON u.telegram_id = p.user_id
             {where}
             ORDER BY p.created_at DESC
             LIMIT ? OFFSET ?
@@ -394,7 +391,7 @@ class AdminData:
         conn = self._conn()
         top = conn.execute(
             """
-            SELECT u.id, u.telegram_id, u.username, u.referral_code,
+            SELECT u.telegram_id, u.referral_code,
                    u.referral_count, u.referral_earned_usd
             FROM users u
             WHERE u.referral_count > 0
@@ -405,9 +402,9 @@ class AdminData:
         ).fetchall()
         recent = conn.execute(
             """
-            SELECT e.*, ru.username AS referrer_username, ru.telegram_id AS referrer_telegram_id
+            SELECT e.*, ru.telegram_id AS referrer_telegram_id
             FROM referral_earnings e
-            JOIN users ru ON ru.id = e.referrer_id
+            JOIN users ru ON ru.telegram_id = e.referrer_id
             ORDER BY e.created_at DESC
             LIMIT ?
             """,
@@ -415,38 +412,24 @@ class AdminData:
         ).fetchall()
         return {"topReferrers": [dict(r) for r in top], "recentEarnings": [dict(r) for r in recent]}
 
-    def list_balance_transactions_global(self, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
-        limit = max(1, min(limit, 200))
-        offset = max(0, offset)
-        conn = self._conn()
-        total = int(conn.execute("SELECT COUNT(*) FROM balance_transactions").fetchone()[0])
-        rows = conn.execute(
-            """
-            SELECT t.*, u.telegram_id, u.username
-            FROM balance_transactions t
-            JOIN users u ON u.id = t.user_id
-            ORDER BY t.created_at DESC
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset),
-        ).fetchall()
-        return {"total": total, "items": [dict(r) for r in rows], "offset": offset, "limit": limit}
+    def list_broadcasts(self) -> list[dict[str, Any]]:
+        return self._db.list_broadcasts()
 
-    def get_popular(self) -> list[str]:
-        return self._db.list_popular_destinations()
+    def send_broadcast(self, body: dict[str, Any]) -> dict[str, Any]:
+        import secrets
 
-    def set_popular(self, countries: list[str]) -> list[str]:
-        from core.security import validate_country_name
+        from core.notifications import send_broadcast
 
-        names = [validate_country_name(c) for c in countries if str(c).strip()]
-        with self._db.transaction() as conn:
-            conn.execute("DELETE FROM popular_destinations")
-            for i, name in enumerate(names):
-                conn.execute(
-                    "INSERT INTO popular_destinations (country_name, sort_order) VALUES (?, ?)",
-                    (name, i),
-                )
-        return self.get_popular()
+        kind = str(body.get("kind", "")).strip().lower()
+        message = str(body.get("message", "")).strip()
+        if kind not in ("news", "marketing"):
+            raise SecurityError("kind must be news or marketing")
+        if not message:
+            raise SecurityError("message is required")
+        sent, failed = send_broadcast(self._db, kind=kind, message=message)
+        broadcast_id = secrets.token_hex(8)
+        self._db.create_broadcast_record(broadcast_id, kind, message, sent=sent, failed=failed)
+        return {"id": broadcast_id, "kind": kind, "sent": sent, "failed": failed}
 
     def list_table_names(self) -> list[str]:
         return sorted(ADMIN_TABLES)
@@ -470,5 +453,5 @@ class AdminData:
             "limit": limit,
         }
 
-    def export_user_json(self, user_id: int) -> str:
-        return self._db.export_user_json(user_id)
+    def export_user_json(self, telegram_id: int) -> str:
+        return self._db.export_user_json(telegram_id)

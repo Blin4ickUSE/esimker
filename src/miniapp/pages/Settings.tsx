@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Bell,
@@ -14,8 +14,101 @@ import {
 import { useAccount, useI18n, paths, Screen, SectionLabel } from "../components/i18n";
 import { getLegalDoc, renderLegalMarkdown } from "../legal";
 
-const APP_VERSION = "v0.2 (beta)";
 const SUPPORT_URL = "https://t.me/esimkerteambot";
+
+async function settingsApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const initData = window.Telegram?.WebApp?.initData?.trim();
+  if (initData) {
+    headers["X-Telegram-Init-Data"] = initData;
+  } else {
+    const raw = localStorage.getItem("esimker.telegramLogin");
+    if (raw) headers["X-Telegram-Login-Data"] = `b64:${btoa(raw)}`;
+  }
+  const res = await fetch(`/api${path}`, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string>) } });
+  const data = (await res.json()) as T & { error?: string };
+  if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `HTTP ${res.status}`);
+  return data;
+}
+
+function ApiSettingsBlock() {
+  const { t } = useI18n();
+  const { authenticated } = useAccount();
+  const [clientId, setClientId] = useState<number | null>(null);
+  const [secret, setSecret] = useState<string | null>(null);
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    void settingsApiFetch<{ clientId: number; webhookUrl?: string }>("/settings/api")
+      .then((data) => {
+        setClientId(data.clientId);
+        if (data.webhookUrl) setWebhookUrl(data.webhookUrl);
+      })
+      .catch(() => undefined);
+  }, [authenticated]);
+
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const data = await settingsApiFetch<{ clientId: number; clientSecret: string }>("/settings/api/generate", {
+        method: "POST",
+        body: "{}",
+      });
+      setClientId(data.clientId);
+      setSecret(data.clientSecret);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveWebhook = async () => {
+    setBusy(true);
+    try {
+      const data = await settingsApiFetch<{ webhookSecret?: string }>("/settings/api/webhook", {
+        method: "POST",
+        body: JSON.stringify({ webhookUrl: webhookUrl.trim() || null }),
+      });
+      if (data.webhookSecret) setWebhookSecret(data.webhookSecret);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={s.card}>
+      <div style={s.emailHint}>
+        {t("settingsApiClientId")}: <b>{clientId ?? "—"}</b>
+      </div>
+      {secret && (
+        <div style={{ ...s.hint, color: "var(--accent)", marginBottom: 10, wordBreak: "break-all" }}>
+          {t("settingsApiSecretHint")}: <code>{secret}</code>
+        </div>
+      )}
+      {webhookSecret && (
+        <div style={{ ...s.hint, color: "var(--accent)", marginBottom: 10, wordBreak: "break-all" }}>
+          Webhook secret: <code>{webhookSecret}</code>
+        </div>
+      )}
+      <button type="button" style={s.btnPrimary} disabled={busy} onClick={() => void generate()}>
+        {t("settingsApiGenerate")}
+      </button>
+      <input
+        style={{ ...s.input, marginTop: 12 }}
+        value={webhookUrl}
+        onChange={(e) => setWebhookUrl(e.target.value)}
+        placeholder="https://your-server.com/webhooks/esimker"
+      />
+      <button type="button" style={s.btnSecondary} disabled={busy} onClick={() => void saveWebhook()}>
+        {t("settingsApiWebhookSave")}
+      </button>
+    </div>
+  );
+}
+
+const APP_VERSION = "v0.2 (beta)";
 
 function Toggle({
   on,
@@ -216,7 +309,20 @@ export default function Settings() {
             })
           }
         />
+        <div style={s.divider} />
+        <Toggle
+          label={t("settingsNotifySubscription")}
+          on={data.notifications.subscription}
+          onToggle={() =>
+            void save({
+              notifications: { ...data.notifications, subscription: !data.notifications.subscription },
+            })
+          }
+        />
       </div>
+
+      <SectionLabel>{t("settingsApi")}</SectionLabel>
+      <ApiSettingsBlock />
 
       <SectionLabel>{t("settingsLegal")}</SectionLabel>
       <div style={s.card}>

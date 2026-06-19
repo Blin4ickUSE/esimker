@@ -10,6 +10,8 @@ Client-side cache only (localStorage, not stored here):
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -44,7 +46,7 @@ from core.security import (
 
 from core.esim_profile import build_android_install_url, build_apple_install_url, build_lpa_string
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 REFERRAL_COMMISSION_RATE = 0.10
 REFERRAL_FRIEND_DISCOUNT_RATE = 0.10
 
@@ -133,30 +135,29 @@ def volume_from_db(value: str) -> int | float | Literal["Безлимит"]:
 @dataclass(slots=True)
 class NotificationPrefs:
     news: bool = True
-    marketing: bool = False
+    marketing: bool = True
     traffic: bool = True
+    subscription: bool = True
 
     def to_dict(self) -> dict[str, bool]:
         return asdict(self)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> NotificationPrefs:
+        keys = row.keys()
         return cls(
             news=bool(row["notify_news"]),
             marketing=bool(row["notify_marketing"]),
             traffic=bool(row["notify_traffic"]),
+            subscription=bool(row["notify_subscription"]) if "notify_subscription" in keys else True,
         )
 
 
 @dataclass(slots=True)
 class User:
-    id: int
     telegram_id: int
-    username: str | None
-    first_name: str | None
-    last_name: str | None
     language_code: str | None
-    balance_usd: float
+    balance: float
     referral_code: str
     referred_by_id: int | None
     referral_earned_usd: float
@@ -393,7 +394,7 @@ class AccountSnapshot:
 
     def to_client_dict(self) -> dict[str, Any]:
         return {
-            "balanceUsd": self.user.balance_usd,
+            "balanceUsd": self.user.balance,
             "esims": [e.to_client_dict() for e in self.esims],
             "orders": [o.to_client_dict() for o in self.orders],
             "usedPromos": self.used_promos,
@@ -422,15 +423,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id         INTEGER NOT NULL UNIQUE,
-    username            TEXT,
-    first_name          TEXT,
-    last_name           TEXT,
+    telegram_id         INTEGER PRIMARY KEY,
     language_code       TEXT,
-    balance_usd         REAL NOT NULL DEFAULT 0,
+    balance             REAL NOT NULL DEFAULT 0,
     referral_code       TEXT NOT NULL UNIQUE,
-    referred_by_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    referred_by_id      INTEGER REFERENCES users(telegram_id) ON DELETE SET NULL,
     referral_earned_usd REAL NOT NULL DEFAULT 0,
     referral_count      INTEGER NOT NULL DEFAULT 0,
     dent_customer_uid   TEXT,
@@ -438,8 +435,9 @@ CREATE TABLE IF NOT EXISTS users (
     email               TEXT,
     email_verified      INTEGER NOT NULL DEFAULT 0,
     notify_news         INTEGER NOT NULL DEFAULT 1,
-    notify_marketing    INTEGER NOT NULL DEFAULT 0,
+    notify_marketing    INTEGER NOT NULL DEFAULT 1,
     notify_traffic      INTEGER NOT NULL DEFAULT 1,
+    notify_subscription INTEGER NOT NULL DEFAULT 1,
     first_opened_at     TEXT NOT NULL,
     last_opened_at      TEXT NOT NULL,
     created_at          TEXT NOT NULL,
@@ -449,7 +447,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS orders (
     id                      TEXT PRIMARY KEY,
-    user_id                 INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id                 INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
     name                    TEXT NOT NULL,
     country_code            TEXT NOT NULL,
     gb                      TEXT NOT NULL,
@@ -467,7 +465,7 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE TABLE IF NOT EXISTS esims (
     id                              TEXT PRIMARY KEY,
-    user_id                         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id                         INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
     order_id                        TEXT REFERENCES orders(id) ON DELETE SET NULL,
     name                            TEXT NOT NULL,
     country_code                    TEXT NOT NULL,
@@ -502,7 +500,7 @@ CREATE TABLE IF NOT EXISTS esims (
 
 CREATE TABLE IF NOT EXISTS balance_transactions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id       INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
     delta_usd     REAL NOT NULL,
     balance_after REAL NOT NULL,
     kind          TEXT NOT NULL,
@@ -521,7 +519,7 @@ CREATE TABLE IF NOT EXISTS promo_codes (
 );
 
 CREATE TABLE IF NOT EXISTS promo_redemptions (
-    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id      INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
     promo_code   TEXT NOT NULL REFERENCES promo_codes(code),
     credited_usd REAL NOT NULL,
     redeemed_at  TEXT NOT NULL,
@@ -530,15 +528,15 @@ CREATE TABLE IF NOT EXISTS promo_redemptions (
 
 CREATE TABLE IF NOT EXISTS referral_relations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    referrer_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    referred_user_id  INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    referrer_id       INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    referred_user_id  INTEGER NOT NULL UNIQUE REFERENCES users(telegram_id) ON DELETE CASCADE,
     referred_at       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS referral_earnings (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    referrer_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    referred_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    referrer_id      INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    referred_user_id INTEGER REFERENCES users(telegram_id) ON DELETE SET NULL,
     order_id         TEXT REFERENCES orders(id) ON DELETE SET NULL,
     commission_usd   REAL NOT NULL,
     kind             TEXT NOT NULL,
@@ -546,7 +544,7 @@ CREATE TABLE IF NOT EXISTS referral_earnings (
 );
 
 CREATE TABLE IF NOT EXISTS country_stats (
-    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id      INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
     country_name TEXT NOT NULL,
     purchases    INTEGER NOT NULL DEFAULT 0,
     last_at      TEXT NOT NULL,
@@ -555,7 +553,7 @@ CREATE TABLE IF NOT EXISTS country_stats (
 
 CREATE TABLE IF NOT EXISTS payment_intents (
     id               TEXT PRIMARY KEY,
-    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id          INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
     kind             TEXT NOT NULL,
     amount_usd       REAL NOT NULL,
     status           TEXT NOT NULL DEFAULT 'pending',
@@ -584,34 +582,42 @@ CREATE INDEX IF NOT EXISTS idx_referral_relations_referrer ON referral_relations
 CREATE INDEX IF NOT EXISTS idx_payment_intents_user ON payment_intents(user_id);
 CREATE INDEX IF NOT EXISTS idx_payment_intents_status ON payment_intents(status);
 
-CREATE TABLE IF NOT EXISTS popular_destinations (
-    country_name TEXT PRIMARY KEY,
-    sort_order   INTEGER NOT NULL DEFAULT 0
+CREATE TABLE IF NOT EXISTS api_clients (
+    telegram_id    INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
+    secret_hash    TEXT NOT NULL,
+    webhook_url    TEXT,
+    webhook_secret TEXT,
+    is_active      INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS broadcasts (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    message      TEXT NOT NULL,
+    sent_count   INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS esim_alert_sent (
+    esim_id    TEXT NOT NULL,
+    alert_type TEXT NOT NULL,
+    sent_at    TEXT NOT NULL,
+    PRIMARY KEY (esim_id, alert_type)
 );
 """
 
-_SEED_POPULAR = (
-    "Turkey",
-    "Thailand",
-    "United Arab Emirates",
-    "Georgia",
-    "Egypt",
-    "Armenia",
-    "Kazakhstan",
-    "China",
-    "Indonesia",
-    "Vietnam",
-)
 
 def _row_to_user(row: sqlite3.Row) -> User:
+    keys = row.keys()
+    balance_col = "balance" if "balance" in keys else "balance_usd"
     return User(
-        id=row["id"],
         telegram_id=row["telegram_id"],
-        username=row["username"],
-        first_name=row["first_name"],
-        last_name=row["last_name"],
         language_code=row["language_code"],
-        balance_usd=float(row["balance_usd"]),
+        balance=float(row[balance_col]),
         referral_code=row["referral_code"],
         referred_by_id=row["referred_by_id"],
         referral_earned_usd=float(row["referral_earned_usd"]),
@@ -709,6 +715,135 @@ def _row_to_order(row: sqlite3.Row) -> Order:
     )
 
 
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """telegram_id as PK, drop profile fields, balance rename, new tables."""
+    user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+    if "id" not in user_cols:
+        return
+
+    id_map_rows = conn.execute("SELECT id, telegram_id FROM users").fetchall()
+    id_to_tg = {int(r["id"]): int(r["telegram_id"]) for r in id_map_rows}
+
+    def remap_user_ids(table: str) -> None:
+        for old_id, tg_id in id_to_tg.items():
+            conn.execute(f"UPDATE {table} SET user_id = ? WHERE user_id = ?", (tg_id, old_id))
+
+    for table in (
+        "orders",
+        "esims",
+        "balance_transactions",
+        "promo_redemptions",
+        "country_stats",
+        "payment_intents",
+    ):
+        remap_user_ids(table)
+
+    for row in conn.execute("SELECT id, referred_by_id FROM users WHERE referred_by_id IS NOT NULL"):
+        old_ref = int(row["referred_by_id"])
+        if old_ref in id_to_tg:
+            conn.execute(
+                "UPDATE users SET referred_by_id = ? WHERE id = ?",
+                (id_to_tg[old_ref], row["id"]),
+            )
+
+    for table in ("referral_relations", "referral_earnings"):
+        for col in ("referrer_id", "referred_user_id"):
+            for old_id, tg_id in id_to_tg.items():
+                conn.execute(
+                    f"UPDATE {table} SET {col} = ? WHERE {col} = ?",
+                    (tg_id, old_id),
+                )
+
+    conn.executescript(
+        """
+        CREATE TABLE users_v7 (
+            telegram_id         INTEGER PRIMARY KEY,
+            language_code       TEXT,
+            balance             REAL NOT NULL DEFAULT 0,
+            referral_code       TEXT NOT NULL UNIQUE,
+            referred_by_id      INTEGER,
+            referral_earned_usd REAL NOT NULL DEFAULT 0,
+            referral_count      INTEGER NOT NULL DEFAULT 0,
+            dent_customer_uid   TEXT,
+            dent_profile_url    TEXT,
+            email               TEXT,
+            email_verified      INTEGER NOT NULL DEFAULT 0,
+            notify_news         INTEGER NOT NULL DEFAULT 1,
+            notify_marketing    INTEGER NOT NULL DEFAULT 1,
+            notify_traffic      INTEGER NOT NULL DEFAULT 1,
+            notify_subscription INTEGER NOT NULL DEFAULT 1,
+            first_opened_at     TEXT NOT NULL,
+            last_opened_at      TEXT NOT NULL,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL,
+            is_blocked          INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    balance_src = "balance_usd" if "balance_usd" in user_cols else "balance"
+    conn.execute(
+        f"""
+        INSERT INTO users_v7 (
+            telegram_id, language_code, balance, referral_code, referred_by_id,
+            referral_earned_usd, referral_count, dent_customer_uid, dent_profile_url,
+            email, email_verified, notify_news, notify_marketing, notify_traffic,
+            notify_subscription, first_opened_at, last_opened_at, created_at, updated_at, is_blocked
+        )
+        SELECT
+            telegram_id, language_code, {balance_src}, referral_code, referred_by_id,
+            referral_earned_usd, referral_count, dent_customer_uid, dent_profile_url,
+            email, email_verified,
+            COALESCE(notify_news, 1),
+            CASE WHEN notify_marketing IS NULL OR notify_marketing = 0 THEN 1 ELSE notify_marketing END,
+            COALESCE(notify_traffic, 1),
+            1,
+            first_opened_at, last_opened_at, created_at, updated_at, is_blocked
+        FROM users
+        """
+    )
+    conn.execute("DROP TABLE users")
+    conn.execute("ALTER TABLE users_v7 RENAME TO users")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by_id)")
+
+    conn.execute("DROP TABLE IF EXISTS popular_destinations")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS api_clients (
+            telegram_id    INTEGER PRIMARY KEY,
+            secret_hash    TEXT NOT NULL,
+            webhook_url    TEXT,
+            webhook_secret TEXT,
+            is_active      INTEGER NOT NULL DEFAULT 1,
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS broadcasts (
+            id           TEXT PRIMARY KEY,
+            kind         TEXT NOT NULL,
+            message      TEXT NOT NULL,
+            sent_count   INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            created_at   TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS esim_alert_sent (
+            esim_id    TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            sent_at    TEXT NOT NULL,
+            PRIMARY KEY (esim_id, alert_type)
+        );
+        """
+    )
+
+    user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+    if "notify_subscription" not in user_cols:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN notify_subscription INTEGER NOT NULL DEFAULT 1"
+        )
+
+
 class Database:
     """Thread-safe SQLite access layer for esimker."""
 
@@ -760,16 +895,27 @@ class Database:
             ).fetchone()
             current = int(version_row["v"] or 0)
             if current < SCHEMA_VERSION:
+                _legacy_popular = (
+                    "Turkey", "Thailand", "United Arab Emirates", "Georgia", "Egypt",
+                    "Armenia", "Kazakhstan", "China", "Indonesia", "Vietnam",
+                )
                 if current < 3:
-                    for i, name in enumerate(_SEED_POPULAR):
-                        conn.execute(
-                            """
-                            INSERT INTO popular_destinations (country_name, sort_order)
-                            VALUES (?, ?)
-                            ON CONFLICT(country_name) DO NOTHING
-                            """,
-                            (name, i),
+                    tables = {
+                        r["name"]
+                        for r in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
                         )
+                    }
+                    if "popular_destinations" in tables:
+                        for i, name in enumerate(_legacy_popular):
+                            conn.execute(
+                                """
+                                INSERT INTO popular_destinations (country_name, sort_order)
+                                VALUES (?, ?)
+                                ON CONFLICT(country_name) DO NOTHING
+                                """,
+                                (name, i),
+                            )
                 if current < 4:
                     cols = {r["name"] for r in conn.execute("PRAGMA table_info(payment_intents)")}
                     if "provider_ref" not in cols:
@@ -792,6 +938,8 @@ class Database:
                     conn.execute(
                         "DELETE FROM promo_codes WHERE code IN ('WELCOME300', 'ESIM500')"
                     )
+                if current < 7:
+                    _migrate_v7(conn)
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, isoformat()),
@@ -803,17 +951,11 @@ class Database:
         self,
         telegram_id: int,
         *,
-        username: str | None = None,
-        first_name: str | None = None,
-        last_name: str | None = None,
         language_code: str | None = None,
         referral_code_from_link: str | None = None,
     ) -> User:
         """Register or update a user on miniapp open; bumps ``last_opened_at``."""
         telegram_id = validate_telegram_id(telegram_id)
-        username = optional_text(username, max_len=64, field="username")
-        first_name = optional_text(first_name, max_len=128, field="first_name")
-        last_name = optional_text(last_name, max_len=128, field="last_name")
         language_code = optional_text(language_code, max_len=16, field="language_code")
         if referral_code_from_link:
             referral_code_from_link = validate_referral_code(referral_code_from_link)
@@ -828,21 +970,18 @@ class Database:
                 conn.execute(
                     """
                     UPDATE users SET
-                        username = COALESCE(?, username),
-                        first_name = COALESCE(?, first_name),
-                        last_name = COALESCE(?, last_name),
                         language_code = COALESCE(?, language_code),
                         last_opened_at = ?,
                         updated_at = ?
                     WHERE telegram_id = ?
                     """,
-                    (username, first_name, last_name, language_code, now, now, telegram_id),
+                    (language_code, now, now, telegram_id),
                 )
-                user = self.get_user_by_telegram_id(telegram_id, conn=conn)
+                user = self.get_user(telegram_id, conn=conn)
                 assert user is not None
                 if referral_code_from_link and user.referred_by_id is None:
-                    self._attach_referrer(user.id, referral_code_from_link, conn=conn)
-                    user = self.get_user_by_id(user.id, conn=conn)
+                    self._attach_referrer(user.telegram_id, referral_code_from_link, conn=conn)
+                    user = self.get_user(telegram_id, conn=conn)
                 if user.is_blocked:
                     raise SecurityError("account blocked")
                 return user
@@ -851,15 +990,12 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO users (
-                    telegram_id, username, first_name, last_name, language_code,
+                    telegram_id, language_code,
                     referral_code, first_opened_at, last_opened_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     telegram_id,
-                    username,
-                    first_name,
-                    last_name,
                     language_code,
                     referral_code,
                     now,
@@ -868,23 +1004,23 @@ class Database:
                     now,
                 ),
             )
-            user_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-            user = self.get_user_by_id(user_id, conn=conn)
+            user = self.get_user(telegram_id, conn=conn)
             assert user is not None
 
             if referral_code_from_link:
-                self._attach_referrer(user.id, referral_code_from_link, conn=conn)
-                user = self.get_user_by_id(user.id, conn=conn)
+                self._attach_referrer(user.telegram_id, referral_code_from_link, conn=conn)
+                user = self.get_user(telegram_id, conn=conn)
             if user.is_blocked:
                 raise SecurityError("account blocked")
             return user
 
-    def get_user_by_telegram_id(
+    def get_user(
         self,
         telegram_id: int,
         *,
         conn: sqlite3.Connection | None = None,
     ) -> User | None:
+        telegram_id = validate_telegram_id(telegram_id)
         db = conn or self.connect()
         row = db.execute(
             "SELECT * FROM users WHERE telegram_id = ?",
@@ -892,15 +1028,22 @@ class Database:
         ).fetchone()
         return _row_to_user(row) if row else None
 
+    def get_user_by_telegram_id(
+        self,
+        telegram_id: int,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> User | None:
+        return self.get_user(telegram_id, conn=conn)
+
     def get_user_by_id(
         self,
         user_id: int,
         *,
         conn: sqlite3.Connection | None = None,
     ) -> User | None:
-        db = conn or self.connect()
-        row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        return _row_to_user(row) if row else None
+        """Alias: user_id is telegram_id."""
+        return self.get_user(user_id, conn=conn)
 
     def get_user_by_referral_code(self, code: str) -> User | None:
         code = validate_referral_code(code)
@@ -912,7 +1055,7 @@ class Database:
 
     def update_user_settings(
         self,
-        user_id: int,
+        telegram_id: int,
         *,
         email: str | None = None,
         email_verified: bool | None = None,
@@ -935,6 +1078,7 @@ class Database:
                     "notify_news = ?",
                     "notify_marketing = ?",
                     "notify_traffic = ?",
+                    "notify_subscription = ?",
                 ]
             )
             values.extend(
@@ -942,6 +1086,7 @@ class Database:
                     int(notifications.news),
                     int(notifications.marketing),
                     int(notifications.traffic),
+                    int(notifications.subscription),
                 ]
             )
         if dent_customer_uid is not None:
@@ -952,30 +1097,30 @@ class Database:
             values.append(optional_text(dent_profile_url, max_len=512, field="dent_profile_url"))
 
         if not fields:
-            user = self.get_user_by_id(user_id)
+            user = self.get_user(telegram_id)
             if user is None:
-                raise NotFoundError(f"user {user_id} not found")
+                raise NotFoundError(f"user {telegram_id} not found")
             return user
 
         now = isoformat()
         fields.append("updated_at = ?")
         values.append(now)
-        values.append(user_id)
+        values.append(telegram_id)
 
         with self.transaction() as conn:
             cur = conn.execute(
-                f"UPDATE users SET {', '.join(fields)} WHERE id = ?",
+                f"UPDATE users SET {', '.join(fields)} WHERE telegram_id = ?",
                 values,
             )
             if cur.rowcount == 0:
-                raise NotFoundError(f"user {user_id} not found")
-        user = self.get_user_by_id(user_id)
+                raise NotFoundError(f"user {telegram_id} not found")
+        user = self.get_user(telegram_id)
         assert user is not None
         return user
 
-    def unlink_email(self, user_id: int) -> User:
+    def unlink_email(self, telegram_id: int) -> User:
         return self.update_user_settings(
-            user_id,
+            telegram_id,
             email=None,
             email_verified=False,
         )
@@ -1011,13 +1156,13 @@ class Database:
                 )
 
         row = conn.execute(
-            "SELECT balance_usd FROM users WHERE id = ?",
+            "SELECT balance FROM users WHERE telegram_id = ?",
             (user_id,),
         ).fetchone()
         if row is None:
             raise NotFoundError(f"user {user_id} not found")
 
-        current = float(row["balance_usd"])
+        current = float(row["balance"])
         new_balance = round(current + delta_usd, 2)
         if new_balance < -1e-9:
             raise InsufficientBalanceError(
@@ -1026,7 +1171,7 @@ class Database:
 
         now = isoformat()
         conn.execute(
-            "UPDATE users SET balance_usd = ?, updated_at = ? WHERE id = ?",
+            "UPDATE users SET balance = ?, updated_at = ? WHERE telegram_id = ?",
             (new_balance, now, user_id),
         )
         conn.execute(
@@ -1682,11 +1827,28 @@ class Database:
     def list_popular_destinations(self) -> list[str]:
         rows = self.connect().execute(
             """
-            SELECT country_name FROM popular_destinations
-            ORDER BY sort_order ASC, country_name ASC
+            SELECT name, COUNT(*) AS cnt
+            FROM orders
+            WHERE status = 'paid'
+            GROUP BY name
+            ORDER BY cnt DESC, name ASC
+            LIMIT 10
             """
         ).fetchall()
-        return [r["country_name"] for r in rows]
+        if rows:
+            return [r["name"] for r in rows]
+        return [
+            "Turkey",
+            "Thailand",
+            "United Arab Emirates",
+            "Georgia",
+            "Egypt",
+            "Armenia",
+            "Kazakhstan",
+            "China",
+            "Indonesia",
+            "Vietnam",
+        ]
 
     # --- Referrals ---
 
@@ -1700,7 +1862,7 @@ class Database:
 
         def _rate(db: sqlite3.Connection) -> float:
             row = db.execute(
-                "SELECT referred_by_id FROM users WHERE id = ?",
+                "SELECT referred_by_id FROM users WHERE telegram_id = ?",
                 (user_id,),
             ).fetchone()
             if row is None or row["referred_by_id"] is None:
@@ -1726,7 +1888,7 @@ class Database:
         conn: sqlite3.Connection,
     ) -> None:
         row = conn.execute(
-            "SELECT referred_by_id FROM users WHERE id = ?",
+            "SELECT referred_by_id FROM users WHERE telegram_id = ?",
             (buyer_id,),
         ).fetchone()
         if row is None or row["referred_by_id"] is None:
@@ -1801,7 +1963,7 @@ class Database:
             UPDATE users SET
                 referral_earned_usd = referral_earned_usd + ?,
                 updated_at = ?
-            WHERE id = ?
+            WHERE telegram_id = ?
             """,
             (commission_usd, now, referrer_id),
         )
@@ -1868,12 +2030,12 @@ class Database:
 
     def get_referrer(self, user_id: int) -> User | None:
         row = self.connect().execute(
-            "SELECT referred_by_id FROM users WHERE id = ?",
+            "SELECT referred_by_id FROM users WHERE telegram_id = ?",
             (user_id,),
         ).fetchone()
         if not row or row["referred_by_id"] is None:
             return None
-        return self.get_user_by_id(int(row["referred_by_id"]))
+        return self.get_user(int(row["referred_by_id"]))
 
     # --- Aggregates ---
 
@@ -1926,17 +2088,17 @@ class Database:
     ) -> None:
         code = referral_code.strip().upper()
         referrer_row = conn.execute(
-            "SELECT id FROM users WHERE referral_code = ?",
+            "SELECT telegram_id FROM users WHERE referral_code = ?",
             (code,),
         ).fetchone()
         if referrer_row is None:
             return
-        referrer_id = int(referrer_row["id"])
+        referrer_id = int(referrer_row["telegram_id"])
         if referrer_id == user_id:
             return
 
         user_row = conn.execute(
-            "SELECT referred_by_id FROM users WHERE id = ?",
+            "SELECT referred_by_id FROM users WHERE telegram_id = ?",
             (user_id,),
         ).fetchone()
         if user_row is None or user_row["referred_by_id"] is not None:
@@ -1944,7 +2106,7 @@ class Database:
 
         now = isoformat()
         conn.execute(
-            "UPDATE users SET referred_by_id = ?, updated_at = ? WHERE id = ?",
+            "UPDATE users SET referred_by_id = ?, updated_at = ? WHERE telegram_id = ?",
             (referrer_id, now, user_id),
         )
         conn.execute(
@@ -1955,7 +2117,7 @@ class Database:
             (referrer_id, user_id, now),
         )
         conn.execute(
-            "UPDATE users SET referral_count = referral_count + 1, updated_at = ? WHERE id = ?",
+            "UPDATE users SET referral_count = referral_count + 1, updated_at = ? WHERE telegram_id = ?",
             (now, referrer_id),
         )
 
@@ -2203,6 +2365,101 @@ class Database:
                 (intent_id,),
             ).fetchone()
         return _row_to_payment_intent(final)
+
+    # --- API clients (reseller) ---
+
+    @staticmethod
+    def hash_api_secret(secret: str) -> str:
+        return hashlib.sha256(secret.encode()).hexdigest()
+
+    def get_api_client(self, telegram_id: int) -> dict[str, Any] | None:
+        row = self.connect().execute(
+            "SELECT telegram_id, webhook_url, webhook_secret, is_active, created_at, updated_at FROM api_clients WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def verify_api_secret(self, telegram_id: int, secret: str) -> bool:
+        row = self.connect().execute(
+            "SELECT secret_hash FROM api_clients WHERE telegram_id = ? AND is_active = 1",
+            (telegram_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        return hmac.compare_digest(row["secret_hash"], self.hash_api_secret(secret))
+
+    def generate_api_client(self, telegram_id: int) -> tuple[str, dict[str, Any]]:
+        """Create or rotate API secret. Returns (plaintext_secret, client_info)."""
+        telegram_id = validate_telegram_id(telegram_id)
+        if self.get_user(telegram_id) is None:
+            raise NotFoundError("user not found")
+        secret = secrets.token_urlsafe(32)
+        secret_hash = self.hash_api_secret(secret)
+        now = isoformat()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO api_clients (telegram_id, secret_hash, is_active, created_at, updated_at)
+                VALUES (?, ?, 1, ?, ?)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    secret_hash = excluded.secret_hash,
+                    is_active = 1,
+                    updated_at = excluded.updated_at
+                """,
+                (telegram_id, secret_hash, now, now),
+            )
+        client = self.get_api_client(telegram_id)
+        assert client is not None
+        return secret, client
+
+    def update_api_client_webhook(
+        self, telegram_id: int, webhook_url: str | None
+    ) -> tuple[dict[str, Any], str | None]:
+        """Set webhook URL; returns (client, new_webhook_secret or None)."""
+        telegram_id = validate_telegram_id(telegram_id)
+        client = self.get_api_client(telegram_id)
+        if client is None:
+            raise NotFoundError("api client not configured")
+        url = optional_text(webhook_url, max_len=512, field="webhook_url") if webhook_url else None
+        webhook_secret = secrets.token_urlsafe(24) if url else None
+        now = isoformat()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE api_clients SET webhook_url = ?, webhook_secret = ?, updated_at = ?
+                WHERE telegram_id = ?
+                """,
+                (url, webhook_secret, now, telegram_id),
+            )
+        updated = self.get_api_client(telegram_id)
+        assert updated is not None
+        return updated, webhook_secret
+
+    def create_broadcast_record(
+        self,
+        broadcast_id: str,
+        kind: str,
+        message: str,
+        *,
+        sent: int,
+        failed: int,
+    ) -> None:
+        now = isoformat()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO broadcasts (id, kind, message, sent_count, failed_count, created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (broadcast_id, kind, message[:4096], sent, failed, now, now),
+            )
+
+    def list_broadcasts(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self.connect().execute(
+            "SELECT * FROM broadcasts ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 __all__ = [

@@ -49,6 +49,7 @@ function CoinRow({ label, onClick, disabled = false }: { label: string; onClick:
 }
 
 const PLATEGA_METHODS = new Set<MethodId>(["sbp", "card_ru", "card_intl"]);
+const CHECKOUT_METHODS = new Set<MethodId>([...PLATEGA_METHODS, "cryptobot"]);
 
 export default function Payment() {
   const navigate = useNavigate();
@@ -133,7 +134,7 @@ export default function Payment() {
       const payment_method =
         method.startsWith("ton_") || method.startsWith("trc20_") ? "crypto" : method;
 
-      if (PLATEGA_METHODS.has(method as MethodId)) {
+      if (CHECKOUT_METHODS.has(method as MethodId)) {
         const { redirectUrl } = await checkoutPayment(intent.id, {
           payment_method,
           payment_provider,

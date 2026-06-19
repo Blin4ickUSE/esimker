@@ -45,9 +45,9 @@ export const api = {
   stats: () => request<DashboardStats>("/stats"),
   users: (params: URLSearchParams) =>
     request<Paged<UserRow>>(`/users?${params}`),
-  user: (id: number) => request<UserDetail>(`/users/${id}`),
-  patchUser: (id: number, body: Record<string, unknown>) =>
-    request<UserDetail>(`/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  user: (telegramId: number) => request<UserDetail>(`/users/${telegramId}`),
+  patchUser: (telegramId: number, body: Record<string, unknown>) =>
+    request<UserDetail>(`/users/${telegramId}`, { method: "PATCH", body: JSON.stringify(body) }),
   orders: (params: URLSearchParams) =>
     request<Paged<Record<string, unknown>>>(`/orders?${params}`),
   esims: (params: URLSearchParams) =>
@@ -63,13 +63,11 @@ export const api = {
       body: JSON.stringify(body),
     }),
   referrals: () => request<ReferralStats>("/referrals"),
-  transactions: (params: URLSearchParams) =>
-    request<Paged<Record<string, unknown>>>(`/transactions?${params}`),
-  popular: () => request<{ countries: string[] }>("/popular"),
-  setPopular: (countries: string[]) =>
-    request<{ countries: string[] }>("/popular", {
-      method: "PUT",
-      body: JSON.stringify({ countries }),
+  broadcasts: () => request<{ items: Record<string, unknown>[] }>("/broadcasts"),
+  sendBroadcast: (body: Record<string, unknown>) =>
+    request<{ id: string; kind: string; sent: number; failed: number }>("/broadcasts", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   tables: () => request<{ tables: string[] }>("/tables"),
   table: (name: string, params: URLSearchParams) =>
@@ -84,11 +82,8 @@ export interface Paged<T> {
 }
 
 export interface UserRow {
-  id: number;
   telegram_id: number;
-  username: string | null;
-  first_name: string | null;
-  balance_usd: number;
+  balance: number;
   referral_code: string;
   is_blocked: number;
   created_at: string;

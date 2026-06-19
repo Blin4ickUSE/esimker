@@ -1,18 +1,6 @@
 import type { CSSProperties } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import {
-  BarChart3,
-  CreditCard,
-  Database,
-  Gift,
-  LayoutDashboard,
-  LogOut,
-  MapPin,
-  Receipt,
-  Smartphone,
-  Users,
-  Wallet,
-} from "lucide-react";
+import { Megaphone, BarChart3, CreditCard, Database, Gift, LayoutDashboard, LogOut, Receipt, Smartphone, Users } from "lucide-react";
 import { useAuth } from "./api";
 
 const nav = [
@@ -21,10 +9,9 @@ const nav = [
   { to: "/orders", label: "Заказы", icon: Receipt },
   { to: "/esims", label: "eSIM", icon: Smartphone },
   { to: "/payments", label: "Платежи", icon: CreditCard },
-  { to: "/transactions", label: "Транзакции", icon: Wallet },
   { to: "/promos", label: "Промокоды", icon: Gift },
   { to: "/referrals", label: "Рефералы", icon: BarChart3 },
-  { to: "/popular", label: "Популярное", icon: MapPin },
+  { to: "/broadcasts", label: "Рассылки", icon: Megaphone },
   { to: "/data", label: "База данных", icon: Database },
 ];
 

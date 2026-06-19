@@ -62,6 +62,16 @@ from api.payments.platega import (  # noqa: E402
     usd_to_rub,
     verify_callback_headers,
 )
+from api.payments.cryptobot import (  # noqa: E402
+    CRYPTOBOT_PROVIDERS,
+    CryptobotError,
+    configured as cryptobot_configured,
+    create_invoice as cryptobot_create_invoice,
+    parse_webhook_update,
+    verify_webhook_signature,
+)
+from api.reseller import RESELLER_PATH_PREFIX, handle_reseller_request  # noqa: E402
+from core.notifications import NotificationWorker  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
@@ -175,6 +185,8 @@ class ApiState:
         self.rate_limiter = RateLimiter(env_int("API_RATE_LIMIT_PER_MINUTE", 120))
         origins = os.getenv("API_CORS_ORIGINS", "").strip()
         self.cors_origins = {o.strip() for o in origins.split(",") if o.strip()}
+        self.notify_worker = NotificationWorker(self.db)
+        self.notify_worker.start()
 
 
 STATE = ApiState()
@@ -281,9 +293,6 @@ def resolve_user(handler: BaseHTTPRequestHandler, *, ref: str | None = None) -> 
         telegram_id = validate_telegram_id(tg_user["id"])
         user = STATE.db.touch_user(
             telegram_id,
-            username=tg_user.get("username"),
-            first_name=tg_user.get("first_name"),
-            last_name=tg_user.get("last_name"),
             language_code=tg_user.get("language_code"),
             referral_code_from_link=referral,
         )
@@ -303,9 +312,6 @@ def resolve_user(handler: BaseHTTPRequestHandler, *, ref: str | None = None) -> 
         telegram_id = tg_user["id"]
         user = STATE.db.touch_user(
             telegram_id,
-            username=tg_user.get("username"),
-            first_name=tg_user.get("first_name"),
-            last_name=tg_user.get("last_name"),
             referral_code_from_link=referral,
         )
         enforce_rate_limit(handler, user_key=str(telegram_id))
@@ -327,8 +333,8 @@ def referral_share_links(code: str) -> dict[str, str]:
     return links
 
 
-def account_payload(user_id: int) -> dict[str, Any]:
-    snapshot = STATE.db.get_account_snapshot(user_id)
+def account_payload(telegram_id: int) -> dict[str, Any]:
+    snapshot = STATE.db.get_account_snapshot(telegram_id)
     base = snapshot.to_client_dict()
     links = referral_share_links(snapshot.user.referral_code)
     base["referral"]["link"] = links["web"]
@@ -348,10 +354,10 @@ def plan_ref_from_body(body: dict[str, Any]) -> Any:
     )
 
 
-def apply_dent_customer(user_id: int, provision: ProvisionResult) -> None:
+def apply_dent_customer(telegram_id: int, provision: ProvisionResult) -> None:
     if provision.dent_customer_uid:
         STATE.db.update_user_settings(
-            user_id,
+            telegram_id,
             dent_customer_uid=provision.dent_customer_uid,
             dent_profile_url=provision.dent_profile_url,
         )
@@ -366,7 +372,7 @@ def provision_purchase(
     try:
         return provision_dent_esim(
             STATE.db,
-            user_id=user.id,
+            user_id=user.telegram_id,
             order_id=order_id,
             plan=plan,
             user_ip=client_ip(handler) if handler else None,
@@ -389,7 +395,7 @@ def complete_purchase_payment_intent(
     if intent.kind != "purchase":
         return STATE.db.complete_payment_intent(
             intent.id,
-            user.id,
+            user.telegram_id,
             payment_method=payment_method,
             payment_provider=payment_provider,
             payment_ref=payment_ref,
@@ -405,7 +411,7 @@ def complete_purchase_payment_intent(
     provision = provision_purchase(user, plan, order_id, handler)
     completed = STATE.db.complete_payment_intent(
         intent.id,
-        user.id,
+        user.telegram_id,
         payment_method=payment_method,
         payment_provider=payment_provider,
         payment_ref=payment_ref,
@@ -414,7 +420,7 @@ def complete_purchase_payment_intent(
         esim_id=esim_id,
         dent_inventory_item_id=provision.inventory_item_id,
     )
-    apply_dent_customer(user.id, provision)
+    apply_dent_customer(user.telegram_id, provision)
     return completed
 
 
@@ -449,7 +455,7 @@ def handle_platega_webhook(handler: BaseHTTPRequestHandler, body: dict[str, Any]
 
     if status == "CONFIRMED" and intent.status == "pending":
         try:
-            user = STATE.db.get_user_by_id(intent.user_id)
+            user = STATE.db.get_user(intent.user_id)
             if user is None:
                 raise SecurityError("user not found")
             complete_purchase_payment_intent(
@@ -470,6 +476,111 @@ def handle_platega_webhook(handler: BaseHTTPRequestHandler, body: dict[str, Any]
     json_response(handler, 200, {"ok": True})
 
 
+def require_cryptobot() -> None:
+    if not cryptobot_configured():
+        raise SecurityError("cryptobot is not configured")
+
+
+def create_cryptobot_checkout(user: Any, body: dict[str, Any]) -> dict[str, Any]:
+    require_cryptobot()
+    intent_id = validate_record_id(body.get("id", ""), field="payment id")
+    intent = STATE.db.get_payment_intent(intent_id, user.telegram_id)
+    if intent.status != "pending":
+        raise ConflictError("payment is not pending")
+
+    base = miniapp_base_url()
+    paid_btn_url = f"{base}/payment?id={intent.id}&paid=1"
+    if intent.kind == "topup":
+        description = f"esimker balance top-up ${intent.amount_usd:.2f}"
+    else:
+        description = f"esimker eSIM — {intent.plan_name or 'plan'}"
+
+    try:
+        result = cryptobot_create_invoice(
+            amount_usd=intent.amount_usd,
+            description=description,
+            payload=intent.id,
+            paid_btn_url=paid_btn_url,
+        )
+    except CryptobotError as exc:
+        raise SecurityError(str(exc)) from exc
+
+    STATE.db.bind_payment_intent_provider(
+        intent.id,
+        user.telegram_id,
+        provider_ref=result["transactionId"],
+        payment_method="cryptobot",
+        payment_provider="cryptobot",
+    )
+    return {
+        "redirectUrl": result["redirectUrl"],
+        "transactionId": result["transactionId"],
+    }
+
+
+def read_raw_body(handler: BaseHTTPRequestHandler) -> bytes:
+    length = int(handler.headers.get("Content-Length", "0") or "0")
+    if length <= 0:
+        return b""
+    if length > MAX_BODY_BYTES:
+        raise SecurityError("request body too large")
+    return handler.rfile.read(length)
+
+
+def handle_cryptobot_webhook(handler: BaseHTTPRequestHandler, raw_body: bytes) -> None:
+    signature = handler.headers.get("crypto-pay-api-signature", "")
+    if not verify_webhook_signature(raw_body, signature):
+        json_response(handler, 401, {"error": "unauthorized"})
+        return
+    try:
+        body = json.loads(raw_body.decode("utf-8"))
+    except json.JSONDecodeError:
+        json_response(handler, 400, {"error": "invalid json"})
+        return
+    if not isinstance(body, dict):
+        json_response(handler, 400, {"error": "invalid json"})
+        return
+
+    parsed = parse_webhook_update(body)
+    if parsed is None:
+        json_response(handler, 200, {"ok": True})
+        return
+
+    _update_type, invoice = parsed
+    invoice_id = invoice.get("invoice_id") or invoice.get("id")
+    if not invoice_id:
+        json_response(handler, 200, {"ok": True})
+        return
+
+    intent = STATE.db.get_payment_intent_by_provider_ref(str(invoice_id))
+    if intent is None:
+        logger.warning("CryptoBot callback for unknown invoice %s", invoice_id)
+        json_response(handler, 200, {"ok": True})
+        return
+
+    if str(invoice.get("status", "")).lower() == "paid" and intent.status == "pending":
+        try:
+            user = STATE.db.get_user(intent.user_id)
+            if user is None:
+                raise SecurityError("user not found")
+            complete_purchase_payment_intent(
+                intent,
+                user,
+                payment_method="cryptobot",
+                payment_provider="cryptobot",
+                payment_ref=str(invoice_id),
+            )
+            logger.info("CryptoBot payment confirmed for intent %s", intent.id)
+        except ConflictError:
+            pass
+        except SecurityError as exc:
+            logger.error("CryptoBot provisioning failed for intent %s: %s", intent.id, exc)
+            json_response(handler, 500, {"error": safe_public_error(exc)})
+            return
+
+    json_response(handler, 200, {"ok": True})
+
+
 def create_platega_checkout(user: Any, body: dict[str, Any]) -> dict[str, Any]:
     require_platega()
     intent_id = validate_record_id(body.get("id", ""), field="payment id")
@@ -478,7 +589,7 @@ def create_platega_checkout(user: Any, body: dict[str, Any]) -> dict[str, Any]:
     if provider not in PLATEGA_PROVIDERS:
         raise SecurityError("payment provider is not supported")
 
-    intent = STATE.db.get_payment_intent(intent_id, user.id)
+    intent = STATE.db.get_payment_intent(intent_id, user.telegram_id)
     if intent.status != "pending":
         raise ConflictError("payment is not pending")
 
@@ -505,7 +616,7 @@ def create_platega_checkout(user: Any, body: dict[str, Any]) -> dict[str, Any]:
 
     STATE.db.bind_payment_intent_provider(
         intent.id,
-        user.id,
+        user.telegram_id,
         provider_ref=result["transactionId"],
         payment_method=provider,
         payment_provider=provider,
@@ -544,6 +655,23 @@ class ApiHandler(BaseHTTPRequestHandler):
                 json_response(self, 200, {"ok": True})
                 return
 
+            if path.startswith(RESELLER_PATH_PREFIX):
+                raw = read_raw_body(self) if method in ("POST", "PATCH", "PUT") else b""
+                body_data = json.loads(raw.decode("utf-8")) if raw else {}
+                if not isinstance(body_data, dict):
+                    body_data = {}
+                if handle_reseller_request(
+                    self,
+                    method,
+                    path,
+                    body_data,
+                    raw,
+                    db=STATE.db,
+                    json_response=json_response,
+                    client_ip=client_ip(self),
+                ):
+                    return
+
             admin_body: dict[str, Any] | None = None
             if path.startswith("/api/admin") and method in ("POST", "PATCH", "PUT"):
                 admin_body = read_json(self)
@@ -574,13 +702,13 @@ class ApiHandler(BaseHTTPRequestHandler):
 
             if method == "GET" and path == "/api/account":
                 user = resolve_user(self, ref=ref)
-                json_response(self, 200, account_payload(user.id))
+                json_response(self, 200, account_payload(user.telegram_id))
                 return
 
             if method == "GET" and path == "/api/payments/intent":
                 user = resolve_user(self, ref=ref)
                 intent_id = validate_record_id((qs.get("id") or [""])[0], field="payment id")
-                intent = STATE.db.get_payment_intent(intent_id, user.id)
+                intent = STATE.db.get_payment_intent(intent_id, user.telegram_id)
                 json_response(self, 200, intent.to_client_dict())
                 return
 
@@ -589,6 +717,10 @@ class ApiHandler(BaseHTTPRequestHandler):
 
                 if path == "/api/webhooks/platega":
                     handle_platega_webhook(self, body)
+                    return
+
+                if path == "/api/webhooks/cryptobot":
+                    handle_cryptobot_webhook(self, read_raw_body(self))
                     return
 
                 if path == "/api/auth/telegram":
@@ -603,13 +735,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                     ref_body = validate_referral_code(body.get("ref")) if body.get("ref") else ref
                     user = STATE.db.touch_user(
                         tg_user["id"],
-                        username=tg_user.get("username"),
-                        first_name=tg_user.get("first_name"),
-                        last_name=tg_user.get("last_name"),
                         referral_code_from_link=ref_body,
                     )
                     enforce_rate_limit(self, user_key=str(tg_user["id"]))
-                    json_response(self, 200, account_payload(user.id))
+                    json_response(self, 200, account_payload(user.telegram_id))
                     return
 
                 user = resolve_user(self, ref=body.get("ref") or ref)
@@ -618,12 +747,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                     kind = str(body.get("kind", "")).strip().lower()
                     if kind == "topup":
                         amount = validate_topup_amount(body.get("amount"))
-                        intent = STATE.db.create_payment_intent_topup(user.id, amount)
+                        intent = STATE.db.create_payment_intent_topup(user.telegram_id, amount)
                     elif kind == "purchase":
                         plan = plan_ref_from_body(body)
                         purchase = plan.to_purchase_dict()
                         intent = STATE.db.create_payment_intent_purchase(
-                            user.id,
+                            user.telegram_id,
                             plan_name=purchase["name"],
                             country_code=purchase["country_code"],
                             gb=plan.gb,
@@ -636,8 +765,41 @@ class ApiHandler(BaseHTTPRequestHandler):
                     return
 
                 if path == "/api/payments/checkout":
-                    checkout = create_platega_checkout(user, body)
+                    provider_raw = body.get("payment_provider") or body.get("payment_method", "")
+                    provider = validate_payment_provider(provider_raw) if provider_raw else ""
+                    if provider in CRYPTOBOT_PROVIDERS:
+                        checkout = create_cryptobot_checkout(user, body)
+                    else:
+                        checkout = create_platega_checkout(user, body)
                     json_response(self, 200, checkout)
+                    return
+
+                if path == "/api/settings/api/generate":
+                    secret, client = STATE.db.generate_api_client(user.telegram_id)
+                    json_response(
+                        self,
+                        200,
+                        {
+                            "clientId": user.telegram_id,
+                            "clientSecret": secret,
+                            "webhookUrl": client.get("webhook_url"),
+                        },
+                    )
+                    return
+
+                if path == "/api/settings/api/webhook":
+                    url = body.get("webhookUrl") or body.get("webhook_url")
+                    updated, webhook_secret = STATE.db.update_api_client_webhook(
+                        user.telegram_id,
+                        str(url).strip() if url else None,
+                    )
+                    payload: dict[str, Any] = {
+                        "clientId": user.telegram_id,
+                        "webhookUrl": updated.get("webhook_url"),
+                    }
+                    if webhook_secret:
+                        payload["webhookSecret"] = webhook_secret
+                    json_response(self, 200, payload)
                     return
 
                 if path == "/api/payments/complete":
@@ -646,7 +808,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     method_name = validate_payment_method(body.get("payment_method", "card"))
                     provider_raw = body.get("payment_provider")
                     provider = validate_payment_provider(provider_raw) if provider_raw else None
-                    intent = STATE.db.get_payment_intent(intent_id, user.id)
+                    intent = STATE.db.get_payment_intent(intent_id, user.telegram_id)
                     if intent.status != "pending":
                         raise ConflictError("payment is not pending")
                     completed = complete_purchase_payment_intent(
@@ -656,7 +818,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                         payment_provider=str(provider) if provider else None,
                         handler=self,
                     )
-                    payload = account_payload(user.id)
+                    payload = account_payload(user.telegram_id)
                     if completed.esim_id:
                         payload["esimId"] = completed.esim_id
                     json_response(self, 200, payload)
@@ -664,25 +826,25 @@ class ApiHandler(BaseHTTPRequestHandler):
 
                 if path == "/api/account/promo":
                     code = validate_promo_code(body.get("code", ""))
-                    result = STATE.db.redeem_promo(user.id, code)
-                    json_response(self, 200, {"result": result, **account_payload(user.id)})
+                    result = STATE.db.redeem_promo(user.telegram_id, code)
+                    json_response(self, 200, {"result": result, **account_payload(user.telegram_id)})
                     return
 
                 if path == "/api/account/touch-country":
                     country = validate_country_name(body.get("country_name", ""))
-                    STATE.db.touch_country(user.id, country, purchased=False)
-                    json_response(self, 200, account_payload(user.id))
+                    STATE.db.touch_country(user.telegram_id, country, purchased=False)
+                    json_response(self, 200, account_payload(user.telegram_id))
                     return
 
                 if path == "/api/account/purchase/balance":
                     plan = plan_ref_from_body(body)
                     purchase = plan.to_purchase_dict()
-                    user_row = STATE.db.get_user_by_id(user.id)
+                    user_row = STATE.db.get_user(user.telegram_id)
                     if user_row is None:
                         raise SecurityError("user not found")
-                    discount = STATE.db.referral_friend_discount_rate(user.id)
+                    discount = STATE.db.referral_friend_discount_rate(user.telegram_id)
                     effective = round(purchase["usd"] * (1.0 - discount), 2)
-                    if user_row.balance_usd < effective:
+                    if user_row.balance < effective:
                         json_response(self, 402, {"error": "insufficient balance"})
                         return
                     esim_id = secrets.token_hex(8)
@@ -690,7 +852,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     provision = provision_purchase(user, plan, order_id, self)
                     try:
                         _order, esim = STATE.db.purchase_from_balance(
-                            user_id=user.id,
+                            user_id=user.telegram_id,
                             order_id=order_id,
                             esim_id=esim_id,
                             name=purchase["name"],
@@ -705,15 +867,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                     except InsufficientBalanceError:
                         json_response(self, 402, {"error": "insufficient balance"})
                         return
-                    apply_dent_customer(user.id, provision)
-                    payload = account_payload(user.id)
+                    apply_dent_customer(user.telegram_id, provision)
+                    payload = account_payload(user.telegram_id)
                     payload["esimId"] = esim.id
                     json_response(self, 200, payload)
                     return
 
                 if path == "/api/settings/email/unlink":
-                    STATE.db.unlink_email(user.id)
-                    json_response(self, 200, account_payload(user.id))
+                    STATE.db.unlink_email(user.telegram_id)
+                    json_response(self, 200, account_payload(user.telegram_id))
                     return
 
                 if path == "/api/settings/email/confirm":
@@ -724,12 +886,26 @@ class ApiHandler(BaseHTTPRequestHandler):
                     if len(code) < 4 or len(code) > 6 or not code.isdigit():
                         raise SecurityError("invalid verification code")
                     STATE.db.update_user_settings(
-                        user.id,
+                        user.telegram_id,
                         email=email,
                         email_verified=True,
                     )
-                    json_response(self, 200, account_payload(user.id))
+                    json_response(self, 200, account_payload(user.telegram_id))
                     return
+
+            if method == "GET" and path == "/api/settings/api":
+                user = resolve_user(self)
+                client = STATE.db.get_api_client(user.telegram_id)
+                json_response(
+                    self,
+                    200,
+                    {
+                        "clientId": user.telegram_id,
+                        "configured": client is not None,
+                        "webhookUrl": client.get("webhook_url") if client else None,
+                    },
+                )
+                return
 
             if method == "PATCH" and path == "/api/settings":
                 body = read_json(self)
@@ -739,8 +915,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if isinstance(notifications, dict):
                     prefs = NotificationPrefs(
                         news=bool(notifications.get("news", True)),
-                        marketing=bool(notifications.get("marketing", False)),
+                        marketing=bool(notifications.get("marketing", True)),
                         traffic=bool(notifications.get("traffic", True)),
+                        subscription=bool(notifications.get("subscription", True)),
                     )
                 kwargs: dict[str, Any] = {}
                 if "email" in body:
@@ -750,8 +927,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if prefs is not None:
                     kwargs["notifications"] = prefs
                 if kwargs:
-                    STATE.db.update_user_settings(user.id, **kwargs)
-                json_response(self, 200, account_payload(user.id))
+                    STATE.db.update_user_settings(user.telegram_id, **kwargs)
+                json_response(self, 200, account_payload(user.telegram_id))
                 return
 
             json_response(self, 404, {"error": "not found"})
@@ -805,6 +982,7 @@ def main() -> None:
     finally:
         server.server_close()
         STATE.db.close()
+        STATE.notify_worker.stop()
 
 
 if __name__ == "__main__":

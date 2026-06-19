@@ -113,6 +113,14 @@ export type StringKey =
   | "settingsNotifyNews"
   | "settingsNotifyMarketing"
   | "settingsNotifyTraffic"
+  | "settingsNotifySubscription"
+  | "settingsApi"
+  | "settingsApiClientId"
+  | "settingsApiSecret"
+  | "settingsApiGenerate"
+  | "settingsApiWebhook"
+  | "settingsApiWebhookSave"
+  | "settingsApiSecretHint"
   | "settingsLegal"
   | "settingsTerms"
   | "settingsPrivacy"
@@ -189,9 +197,19 @@ interface I18nCtx {
 const I18nCtx = createContext<I18nCtx | null>(null);
 const LANG_KEY = "esimker.lang";
 
+function detectLang(): Lang {
+  const tgLang = window.Telegram?.WebApp?.initDataUnsafe?.user?.language_code;
+  if (tgLang?.toLowerCase().startsWith("ru")) return "ru";
+  if (tgLang?.toLowerCase().startsWith("en")) return "en";
+  const nav = navigator.language?.toLowerCase() ?? "";
+  if (nav.startsWith("ru")) return "ru";
+  return "en";
+}
+
 function readLang(): Lang {
   const saved = localStorage.getItem(LANG_KEY);
-  return saved === "en" ? "en" : "ru";
+  if (saved === "en" || saved === "ru") return saved;
+  return detectLang();
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
@@ -201,6 +219,14 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(LANG_KEY, lang);
     document.documentElement.lang = lang;
   }, [lang]);
+
+  useEffect(() => {
+    const tg = window.Telegram?.WebApp as { onEvent?: (e: string, cb: () => void) => void } | undefined;
+    const sync = () => {
+      if (!localStorage.getItem(LANG_KEY)) setLang(detectLang());
+    };
+    tg?.onEvent?.("viewportChanged", sync);
+  }, []);
 
   const value = useMemo<I18nCtx>(
     () => ({
@@ -369,10 +395,17 @@ interface ThemeCtx {
 const ThemeCtx = createContext<ThemeCtx | null>(null);
 const THEME_KEY = "esimker.theme";
 
+function detectTheme(): ThemeName {
+  const tgScheme = (window.Telegram?.WebApp as { colorScheme?: string } | undefined)?.colorScheme;
+  if (tgScheme === "dark" || tgScheme === "light") return tgScheme;
+  if (window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
+  return "dark";
+}
+
 function readTheme(): ThemeName {
   const saved = localStorage.getItem(THEME_KEY);
   if (saved === "dark" || saved === "light") return saved;
-  return "dark";
+  return detectTheme();
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -383,6 +416,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.style.colorScheme = theme;
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onMq = () => {
+      if (!localStorage.getItem(THEME_KEY)) setTheme(detectTheme());
+    };
+    mq.addEventListener("change", onMq);
+    const tg = window.Telegram?.WebApp as { onEvent?: (e: string, cb: () => void) => void } | undefined;
+    const onTgTheme = () => setTheme(detectTheme());
+    tg?.onEvent?.("themeChanged", onTgTheme);
+    return () => {
+      mq.removeEventListener("change", onMq);
+    };
+  }, []);
 
   return (
     <ThemeCtx.Provider value={{ theme, toggle: () => setTheme((t) => (t === "dark" ? "light" : "dark")) }}>
@@ -403,6 +450,7 @@ export interface NotificationPrefs {
   news: boolean;
   marketing: boolean;
   traffic: boolean;
+  subscription: boolean;
 }
 
 export interface ReferralInfo {
@@ -598,8 +646,9 @@ declare global {
 
 const defaultNotifications = (): NotificationPrefs => ({
   news: true,
-  marketing: false,
+  marketing: true,
   traffic: true,
+  subscription: true,
 });
 
 const defaultReferral = (): ReferralInfo => ({

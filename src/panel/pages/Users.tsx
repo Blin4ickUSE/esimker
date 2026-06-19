@@ -42,9 +42,7 @@ export default function Users() {
       <TableWrap>
         <thead>
           <tr>
-            <Th>ID</Th>
-            <Th>Telegram</Th>
-            <Th>Имя</Th>
+            <Th>Telegram ID</Th>
             <Th>Баланс</Th>
             <Th>Реф. код</Th>
             <Th>Статус</Th>
@@ -53,15 +51,13 @@ export default function Users() {
         </thead>
         <tbody>
           {items.map((u) => (
-            <tr key={u.id}>
-              <Td>{u.id}</Td>
+            <tr key={u.telegram_id}>
               <Td>{u.telegram_id}</Td>
-              <Td>@{u.username || "—"} {u.first_name || ""}</Td>
-              <Td>${u.balance_usd.toFixed(2)}</Td>
+              <Td>${Number(u.balance).toFixed(2)}</Td>
               <Td>{u.referral_code}</Td>
               <Td>{u.is_blocked ? "🚫 блок" : "активен"}</Td>
               <Td>
-                <Link to={`/users/${u.id}`} style={{ color: "#ff8c1a" }}>
+                <Link to={`/users/${u.telegram_id}`} style={{ color: "#ff8c1a" }}>
                   открыть
                 </Link>
               </Td>

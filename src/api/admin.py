@@ -95,13 +95,13 @@ def handle_admin_request(
 
         m = _USER_ID_RE.match(path)
         if m:
-            user_id = int(m.group(1))
+            telegram_id = int(m.group(1))
             if method == "GET":
-                json_response(handler, 200, admin.get_user_detail(user_id))
+                json_response(handler, 200, admin.get_user_detail(telegram_id))
                 return True
             if method == "PATCH":
                 payload = body if body is not None else read_json(handler)
-                json_response(handler, 200, admin.patch_user(user_id, payload))
+                json_response(handler, 200, admin.patch_user(telegram_id, payload))
                 return True
 
         export_match = re.match(r"^/api/admin/users/(\d+)/export$", path)
@@ -174,27 +174,13 @@ def handle_admin_request(
             json_response(handler, 200, admin.list_referrals(limit=_qs_int(qs, "limit", 100)))
             return True
 
-        if path == "/api/admin/transactions" and method == "GET":
-            json_response(
-                handler,
-                200,
-                admin.list_balance_transactions_global(
-                    limit=_qs_int(qs, "limit", 100),
-                    offset=_qs_int(qs, "offset", 0),
-                ),
-            )
+        if path == "/api/admin/broadcasts" and method == "GET":
+            json_response(handler, 200, {"items": admin.list_broadcasts()})
             return True
 
-        if path == "/api/admin/popular" and method == "GET":
-            json_response(handler, 200, {"countries": admin.get_popular()})
-            return True
-
-        if path == "/api/admin/popular" and method == "PUT":
+        if path == "/api/admin/broadcasts" and method == "POST":
             payload = body if body is not None else read_json(handler)
-            countries = payload.get("countries", [])
-            if not isinstance(countries, list):
-                raise SecurityError("countries must be a list")
-            json_response(handler, 200, {"countries": admin.set_popular(countries)})
+            json_response(handler, 201, admin.send_broadcast(payload))
             return True
 
         if path == "/api/admin/tables" and method == "GET":

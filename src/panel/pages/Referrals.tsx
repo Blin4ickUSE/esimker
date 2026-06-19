@@ -59,7 +59,7 @@ export default function Referrals() {
               <tbody>
                 {data.recentEarnings.map((e, i) => (
                   <tr key={i}>
-                    <Td>@{String(e.referrer_username || e.referrer_telegram_id)}</Td>
+                    <Td>{String(e.referrer_telegram_id)}</Td>
                     <Td>{String(e.order_id)}</Td>
                     <Td>{formatUsd(Number(e.commission_usd))}</Td>
                     <Td>{String(e.created_at)}</Td>

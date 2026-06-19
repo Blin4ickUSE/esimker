@@ -268,6 +268,9 @@ ensure_env_file() {
     else
         log_success "  ✔ PLATEGA_WEBHOOK_DOMAIN"
         webhook_domain="$(env_get PLATEGA_WEBHOOK_DOMAIN)"
+        ssl_for_hint="${INSTALL_SSL_PORT:-$(nginx_read_ssl_port 2>/dev/null || echo 443)}"
+        webhook_url="$(url_with_port "$webhook_domain" "$ssl_for_hint")/api/webhooks/platega"
+        printf '     %s↳ Callback URL: %s%s\n' "$DIM" "$webhook_url" "$NC"
     fi
 
     if ! env_is_set PANEL_DOMAIN; then
@@ -357,6 +360,14 @@ ensure_env_file() {
 
     if ! env_is_set VITE_TELEGRAM_BOT_USERNAME; then
         env_set VITE_TELEGRAM_BOT_USERNAME "${bot_username:-$(env_get telegram_bot_username)}"
+    fi
+
+    if ! grep -q '^cryptobot_api_token=' .env 2>/dev/null; then
+        section "CryptoBot / Crypto Pay (опционально)"
+        hint "Токен из @CryptoBot → Crypto Pay → My Apps"
+        local crypto_token
+        prompt_secret "  cryptobot_api_token (Enter — пропустить): " crypto_token
+        env_set cryptobot_api_token "${crypto_token:-}"
     fi
 
     if ! grep -q '^dent_client_id=' .env 2>/dev/null; then
@@ -826,6 +837,18 @@ server {
         proxy_connect_timeout 15s;
     }
 
+    location /api/webhooks/cryptobot {
+        proxy_pass http://127.0.0.1:${http_port};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Connection "";
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 15s;
+    }
+
     location / {
         return 404;
     }
@@ -1056,6 +1079,8 @@ print_summary() {
     printf "  API health:       ${YELLOW}%s/api/health${NC}\n" "$miniapp_url"
     if [[ -n "$webhook_url" ]]; then
         printf "  Platega webhook:  ${YELLOW}%s${NC}\n" "$webhook_url"
+        cryptobot_url="$(url_with_port "$webhook_domain" "$ssl_port")/api/webhooks/cryptobot"
+        printf "  CryptoBot webhook: ${YELLOW}%s${NC}\n" "$cryptobot_url"
     fi
     printf '\n'
     printf "${BOLD}  Обязательно в @BotFather:${NC}\n"
@@ -1065,6 +1090,9 @@ print_summary() {
         printf '\n'
         printf "${BOLD}  Platega (личный кабинет):${NC}\n"
         printf "  Callback URL → ${CYAN}%s${NC}\n" "$webhook_url"
+        printf '\n'
+        printf "${BOLD}  CryptoBot / Crypto Pay (@CryptoBot → My Apps → Webhooks):${NC}\n"
+        printf "  Webhook URL  → ${CYAN}%s${NC}\n" "$(url_with_port "$webhook_domain" "$ssl_port")/api/webhooks/cryptobot"
     fi
     if [[ -n "${INSTALL_PANEL_PASSWORD:-}" ]]; then
         printf '\n'

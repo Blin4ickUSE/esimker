@@ -18,8 +18,7 @@ const Esims = lazy(() => import("./pages/Esims"));
 const Payments = lazy(() => import("./pages/Payments"));
 const Promos = lazy(() => import("./pages/Promos"));
 const Referrals = lazy(() => import("./pages/Referrals"));
-const Transactions = lazy(() => import("./pages/Transactions"));
-const Popular = lazy(() => import("./pages/Popular"));
+const Broadcasts = lazy(() => import("./pages/Broadcasts"));
 const DataBrowser = lazy(() => import("./pages/DataBrowser"));
 
 function Guard({ children }: { children: React.ReactNode }) {
@@ -53,8 +52,7 @@ function App() {
               <Route path="payments" element={<Payments />} />
               <Route path="promos" element={<Promos />} />
               <Route path="referrals" element={<Referrals />} />
-              <Route path="transactions" element={<Transactions />} />
-              <Route path="popular" element={<Popular />} />
+              <Route path="broadcasts" element={<Broadcasts />} />
               <Route path="data" element={<DataBrowser />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
