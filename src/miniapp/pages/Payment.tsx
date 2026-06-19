@@ -1,6 +1,6 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import sbpImg from "@assets/img/sbp.png";
 import cardRuImg from "@assets/img/card_ru.png";
 import cardImg from "@assets/img/card.png";
@@ -14,7 +14,7 @@ import {
   type PaymentIntentView,
 } from "../components/i18n";
 
-type Step = "methods" | "crypto";
+type Step = "methods" | "crypto" | "awaiting";
 type MethodId = "sbp" | "card_ru" | "card_intl" | "crypto" | "cryptobot";
 type CryptoId = "ton_usdt" | "ton_gram" | "trc20_usdt" | "trc20_trx";
 
@@ -61,36 +61,62 @@ export default function Payment() {
   const [busy, setBusy] = useState(false);
   const [intent, setIntent] = useState<PaymentIntentView | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
 
   const paymentId = params.get("id")?.trim() ?? "";
   const paidReturn = params.get("paid");
 
+  const handlePaymentComplete = useCallback(
+    async (data: PaymentIntentView) => {
+      await refresh();
+      if (data.kind === "topup") navigate(paths.home, { replace: true });
+      else navigate(paths.myEsims, { replace: true });
+    },
+    [refresh, navigate],
+  );
+
   useEffect(() => {
-    if (!paymentId || paidReturn !== "1") return;
+    if (paidReturn === "1" && paymentId) {
+      setStep("awaiting");
+    }
+  }, [paidReturn, paymentId]);
+
+  useEffect(() => {
+    if (step !== "awaiting" || !paymentId) return;
     let cancelled = false;
     let attempts = 0;
+
     const poll = async () => {
+      if (cancelled) return;
       attempts += 1;
       try {
         const data = await getPaymentIntent(paymentId);
         if (cancelled) return;
         setIntent(data);
         if (data.status === "completed") {
-          await refresh();
-          if (data.kind === "topup") navigate(paths.home, { replace: true });
-          else navigate(paths.myEsims, { replace: true });
-        } else if (attempts < 30) {
-          window.setTimeout(poll, 2000);
+          await handlePaymentComplete(data);
+          return;
+        }
+        if (attempts < 60 && !cancelled) {
+          window.setTimeout(() => void poll(), 2000);
         }
       } catch {
-        if (attempts < 30 && !cancelled) window.setTimeout(poll, 2000);
+        if (attempts < 60 && !cancelled) {
+          window.setTimeout(() => void poll(), 2000);
+        }
       }
     };
+
     void poll();
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && !cancelled) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [paymentId, paidReturn, getPaymentIntent, refresh, navigate]);
+  }, [step, paymentId, getPaymentIntent, handlePaymentComplete]);
 
   useEffect(() => {
     if (!paymentId) {
@@ -118,6 +144,11 @@ export default function Payment() {
   const valid = intent != null && intent.status === "pending" && amount > 0;
 
   const goBack = () => {
+    if (step === "awaiting") {
+      setStep("methods");
+      setCheckoutUrl(null);
+      return;
+    }
     if (step === "crypto") {
       setStep("methods");
       return;
@@ -140,6 +171,8 @@ export default function Payment() {
           payment_method,
           payment_provider,
         });
+        setCheckoutUrl(redirectUrl);
+        setStep("awaiting");
         openExternalLink(redirectUrl);
         return;
       }
@@ -167,6 +200,43 @@ export default function Payment() {
             <div style={s.title}>{t("payTitle")}</div>
           </div>
           <div style={s.missing}>{t("payInvalid")}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === "awaiting" && intent) {
+    return (
+      <div style={s.page}>
+        <div style={s.scroll}>
+          <div style={s.head}>
+            <button type="button" style={s.back} onClick={goBack} aria-label={t("back")}>
+              <ChevronLeft size={20} />
+            </button>
+            <div style={s.title}>{t("payAwaitingTitle")}</div>
+          </div>
+
+          <div style={s.amountCard}>
+            <div style={s.amountGlow} />
+            <div style={s.amountLabel}>{t("payAmount")}</div>
+            <div style={s.amountValue}>{formatUsd(amount)}</div>
+          </div>
+
+          <div style={s.awaitingCard}>
+            <Loader2 size={36} color="var(--accent)" style={s.spinner} />
+            <div style={s.awaitingTitle}>{t("payAwaitingTitle")}</div>
+            <div style={s.awaitingBody}>{t("payAwaitingBody")}</div>
+            <div style={s.awaitingHint}>{t("payAwaitingHint")}</div>
+            {checkoutUrl && (
+              <button
+                type="button"
+                style={s.awaitingBtn}
+                onClick={() => openExternalLink(checkoutUrl)}
+              >
+                {t("payOpenAgain")}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -402,5 +472,45 @@ const s: Record<string, CSSProperties> = {
     color: "var(--text-dim)",
     padding: "48px 16px",
     fontSize: "var(--fs-md)",
+  },
+
+  awaitingCard: {
+    ...card,
+    padding: "28px 20px",
+    textAlign: "center",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 12,
+  },
+  spinner: {
+    animation: "esimker-spin 1s linear infinite",
+  },
+  awaitingTitle: {
+    fontSize: "var(--fs-lg)",
+    fontWeight: 700,
+  },
+  awaitingBody: {
+    fontSize: "var(--fs-md)",
+    color: "var(--text-dim)",
+    lineHeight: 1.5,
+    maxWidth: 280,
+  },
+  awaitingHint: {
+    fontSize: "var(--fs-sm)",
+    color: "var(--text-dim)",
+    lineHeight: 1.4,
+    maxWidth: 280,
+  },
+  awaitingBtn: {
+    marginTop: 8,
+    padding: "12px 20px",
+    borderRadius: "var(--r-lg)",
+    border: "1px solid var(--line-strong)",
+    background: "var(--chip)",
+    color: "var(--text)",
+    fontSize: "var(--fs-md)",
+    fontWeight: 600,
+    cursor: "pointer",
   },
 };

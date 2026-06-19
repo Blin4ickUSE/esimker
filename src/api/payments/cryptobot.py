@@ -44,7 +44,13 @@ def _headers() -> dict[str, str]:
     }
 
 
-def _request(method: str, api_method: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _request(
+    method: str,
+    api_method: str,
+    body: dict[str, Any] | None = None,
+    *,
+    params: dict[str, str] | None = None,
+) -> dict[str, Any]:
     token = _api_token()
     if not token:
         raise CryptobotError("cryptobot is not configured")
@@ -52,7 +58,7 @@ def _request(method: str, api_method: str, body: dict[str, Any] | None = None) -
     try:
         with httpx.Client(timeout=30.0, headers=_headers()) as client:
             if method.upper() == "GET":
-                resp = client.get(url)
+                resp = client.get(url, params=params)
             else:
                 resp = client.post(url, json=body or {})
     except httpx.RequestError as exc:
@@ -76,9 +82,13 @@ def _request(method: str, api_method: str, body: dict[str, Any] | None = None) -
         logger.error("Crypto Pay API error: %s", payload)
         raise CryptobotError("cryptobot api error")
     result = payload.get("result")
-    if not isinstance(result, dict):
+    if result is None:
         raise CryptobotError("cryptobot response incomplete")
-    return result
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, list):
+        return {"items": result}
+    return {"value": result}
 
 
 def create_invoice(
@@ -131,3 +141,24 @@ def parse_webhook_update(body: dict[str, Any]) -> tuple[str, dict[str, Any]] | N
     if update_type == "invoice_paid" and isinstance(payload, dict):
         return update_type, payload
     return None
+
+
+def get_invoice(invoice_id: str) -> dict[str, Any] | None:
+    """Fetch invoice status from Crypto Pay (fallback when webhooks are delayed)."""
+    invoice_id = str(invoice_id).strip()
+    if not invoice_id:
+        return None
+    result = _request("GET", "getInvoices", params={"invoice_ids": invoice_id})
+    items = result.get("items")
+    if not isinstance(items, list) or not items:
+        return None
+    first = items[0]
+    return first if isinstance(first, dict) else None
+
+
+def set_webhook(url: str) -> None:
+    """Register webhook URL in Crypto Pay app settings."""
+    url = url.strip()
+    if not url:
+        raise CryptobotError("webhook url is empty")
+    _request("POST", "setWebhook", {"url": url})

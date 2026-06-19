@@ -67,7 +67,9 @@ from api.payments.cryptobot import (  # noqa: E402
     CryptobotError,
     configured as cryptobot_configured,
     create_invoice as cryptobot_create_invoice,
+    get_invoice as cryptobot_get_invoice,
     parse_webhook_update,
+    set_webhook as cryptobot_set_webhook,
     verify_webhook_signature,
 )
 from api.reseller import RESELLER_PATH_PREFIX, handle_reseller_request  # noqa: E402
@@ -481,6 +483,61 @@ def require_cryptobot() -> None:
         raise SecurityError("cryptobot is not configured")
 
 
+def cryptobot_webhook_url() -> str | None:
+    override = os.getenv("CRYPTOBOT_WEBHOOK_URL", "").strip()
+    if override:
+        return override
+    domain = os.getenv("PLATEGA_WEBHOOK_DOMAIN", "").strip()
+    if not domain:
+        return None
+    return f"https://{domain.rstrip('/')}/api/webhooks/cryptobot"
+
+
+def sync_cryptobot_payment_intent(intent: Any) -> Any:
+    """Complete a pending CryptoBot intent if the invoice is already paid."""
+    if intent.status != "pending":
+        return intent
+    if intent.payment_provider != "cryptobot" or not intent.provider_ref:
+        return intent
+    try:
+        invoice = cryptobot_get_invoice(intent.provider_ref)
+    except CryptobotError as exc:
+        logger.debug("CryptoBot invoice sync failed for %s: %s", intent.id, exc)
+        return intent
+    if not invoice or str(invoice.get("status", "")).lower() != "paid":
+        return intent
+    try:
+        user = STATE.db.get_user(intent.user_id)
+        if user is None:
+            return intent
+        return complete_purchase_payment_intent(
+            intent,
+            user,
+            payment_method="cryptobot",
+            payment_provider="cryptobot",
+            payment_ref=str(invoice.get("invoice_id") or intent.provider_ref),
+        )
+    except ConflictError:
+        return STATE.db.get_payment_intent(intent.id, intent.user_id)
+    except SecurityError as exc:
+        logger.error("CryptoBot sync failed for intent %s: %s", intent.id, exc)
+        return intent
+
+
+def register_cryptobot_webhook() -> None:
+    if not cryptobot_configured():
+        return
+    url = cryptobot_webhook_url()
+    if not url:
+        logger.warning("CryptoBot webhook URL is not configured (set PLATEGA_WEBHOOK_DOMAIN)")
+        return
+    try:
+        cryptobot_set_webhook(url)
+        logger.info("CryptoBot webhook registered: %s", url)
+    except CryptobotError as exc:
+        logger.error("CryptoBot webhook registration failed: %s", exc)
+
+
 def create_cryptobot_checkout(user: Any, body: dict[str, Any]) -> dict[str, Any]:
     require_cryptobot()
     intent_id = validate_record_id(body.get("id", ""), field="payment id")
@@ -530,6 +587,11 @@ def read_raw_body(handler: BaseHTTPRequestHandler) -> bytes:
 def handle_cryptobot_webhook(handler: BaseHTTPRequestHandler, raw_body: bytes) -> None:
     signature = handler.headers.get("crypto-pay-api-signature", "")
     if not verify_webhook_signature(raw_body, signature):
+        logger.warning(
+            "CryptoBot webhook rejected: bad signature (body_len=%s, has_sig=%s)",
+            len(raw_body),
+            bool(signature),
+        )
         json_response(handler, 401, {"error": "unauthorized"})
         return
     try:
@@ -709,18 +771,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                 user = resolve_user(self, ref=ref)
                 intent_id = validate_record_id((qs.get("id") or [""])[0], field="payment id")
                 intent = STATE.db.get_payment_intent(intent_id, user.telegram_id)
+                intent = sync_cryptobot_payment_intent(intent)
                 json_response(self, 200, intent.to_client_dict())
                 return
 
             if method == "POST":
+                if path == "/api/webhooks/cryptobot":
+                    handle_cryptobot_webhook(self, read_raw_body(self))
+                    return
+
                 body = read_json(self)
 
                 if path == "/api/webhooks/platega":
                     handle_platega_webhook(self, body)
-                    return
-
-                if path == "/api/webhooks/cryptobot":
-                    handle_cryptobot_webhook(self, read_raw_body(self))
                     return
 
                 if path == "/api/auth/telegram":
@@ -965,6 +1028,7 @@ def main() -> None:
     host = os.getenv("API_HOST", "127.0.0.1").strip() or "127.0.0.1"
     if not STATE.bot_token:
         raise SystemExit("telegram_bot_token is required")
+    register_cryptobot_webhook()
     if STATE.production and host not in ("127.0.0.1", "::1", "0.0.0.0"):
         logger.info("API listening on all interfaces (container/network mode)")
     server = ThreadingHTTPServer((host, port), ApiHandler)

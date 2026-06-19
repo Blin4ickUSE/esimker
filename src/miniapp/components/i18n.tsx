@@ -160,6 +160,10 @@ export type StringKey =
   | "payCryptoTon"
   | "payCryptoTrc20"
   | "payInvalid"
+  | "payAwaitingTitle"
+  | "payAwaitingBody"
+  | "payAwaitingHint"
+  | "payOpenAgain"
   | "authTitle"
   | "authSub"
   | "authOpenBot"
@@ -370,6 +374,7 @@ body{background:var(--bg);color:var(--text);min-height:100%}
 #root{min-height:100%}
 button,input,select,textarea{font-family:inherit;font-size:inherit}
 @keyframes pageIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes esimker-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .page-transition{animation:pageIn .38s cubic-bezier(.22,1,.36,1) both}
 @keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
 .home-in{animation:fadeUp .55s cubic-bezier(.22,1,.36,1) both}
