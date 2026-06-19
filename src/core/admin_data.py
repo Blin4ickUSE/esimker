@@ -386,6 +386,44 @@ class AdminData:
         row = self._conn().execute("SELECT * FROM promo_codes WHERE code = ?", (code,)).fetchone()
         return dict(row)
 
+    def delete_promo(self, code: str) -> None:
+        code = validate_promo_code(code)
+        with self._db.transaction() as conn:
+            conn.execute("DELETE FROM promo_redemptions WHERE promo_code = ?", (code,))
+            cur = conn.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
+            if cur.rowcount == 0:
+                raise NotFoundError("promo not found")
+
+    def resolve_telegram_usernames(self, telegram_ids: list[int]) -> dict[int, str]:
+        import json
+        import urllib.error
+        import urllib.request
+
+        token = __import__("os").getenv("telegram_bot_token", "").strip()
+        if not token:
+            return {}
+        result: dict[int, str] = {}
+        for raw_id in telegram_ids[:100]:
+            try:
+                tid = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            url = f"https://api.telegram.org/bot{token}/getChat?chat_id={tid}"
+            try:
+                with urllib.request.urlopen(url, timeout=8) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+            except (urllib.error.URLError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or not payload.get("ok"):
+                continue
+            chat = payload.get("result")
+            if not isinstance(chat, dict):
+                continue
+            username = str(chat.get("username") or "").strip().lstrip("@")
+            if username:
+                result[tid] = username
+        return {str(k): v for k, v in result.items()}
+
     def list_referrals(self, *, limit: int = 100) -> dict[str, Any]:
         limit = max(1, min(limit, 500))
         conn = self._conn()

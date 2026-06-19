@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import sbpImg from "@assets/img/sbp.png";
 import cardRuImg from "@assets/img/card_ru.png";
-import cardImg from "@assets/img/card.png";
 import cryptobotImg from "@assets/img/cryptobot.png";
 import {
   useI18n,
@@ -15,7 +14,7 @@ import {
 } from "../components/i18n";
 
 type Step = "methods" | "crypto" | "awaiting";
-type MethodId = "sbp" | "card_ru" | "card_intl" | "crypto" | "cryptobot";
+type MethodId = "sbp" | "card_ru" | "crypto" | "cryptobot";
 type CryptoId = "ton_usdt" | "ton_gram" | "trc20_usdt" | "trc20_trx";
 
 function MethodRow({
@@ -49,7 +48,7 @@ function CoinRow({ label, onClick, disabled = false }: { label: string; onClick:
   );
 }
 
-const PLATEGA_METHODS = new Set<MethodId>(["sbp", "card_ru", "card_intl"]);
+const PLATEGA_METHODS = new Set<MethodId>(["sbp", "card_ru"]);
 const CHECKOUT_METHODS = new Set<MethodId>([...PLATEGA_METHODS, "cryptobot"]);
 
 export default function Payment() {
@@ -141,6 +140,8 @@ export default function Payment() {
   }, [paymentId, getPaymentIntent]);
 
   const amount = intent?.amountUsd ?? 0;
+  const planPrice = intent?.plan?.usd ?? amount;
+  const showPlanTotal = intent?.kind === "purchase" && planPrice > amount;
   const valid = intent != null && intent.status === "pending" && amount > 0;
 
   const goBack = () => {
@@ -220,6 +221,11 @@ export default function Payment() {
             <div style={s.amountGlow} />
             <div style={s.amountLabel}>{t("payAmount")}</div>
             <div style={s.amountValue}>{formatUsd(amount)}</div>
+            {showPlanTotal && (
+              <div style={s.amountSub}>
+                {t("payPlanTotal")}: {formatUsd(planPrice)}
+              </div>
+            )}
           </div>
 
           <div style={s.awaitingCard}>
@@ -256,6 +262,11 @@ export default function Payment() {
           <div style={s.amountGlow} />
           <div style={s.amountLabel}>{t("payAmount")}</div>
           <div style={s.amountValue}>{formatUsd(amount)}</div>
+          {showPlanTotal && (
+            <div style={s.amountSub}>
+              {t("payPlanTotal")}: {formatUsd(planPrice)}
+            </div>
+          )}
         </div>
 
         {busy && <div style={s.busyBanner}>{t("payLoading")}</div>}
@@ -273,13 +284,6 @@ export default function Payment() {
               icon={<img src={cardRuImg} alt="" style={s.img} />}
               label={t("payCardRu")}
               onClick={() => complete("card_ru")}
-              chevron={false}
-              disabled={busy}
-            />
-            <MethodRow
-              icon={<img src={cardImg} alt="" style={s.img} />}
-              label={t("payCardIntl")}
-              onClick={() => complete("card_intl")}
               chevron={false}
               disabled={busy}
             />
@@ -390,6 +394,12 @@ const s: Record<string, CSSProperties> = {
     fontSize: 42,
     fontWeight: 700,
     letterSpacing: "-1.5px",
+  },
+  amountSub: {
+    position: "relative",
+    marginTop: 8,
+    fontSize: "var(--fs-sm)",
+    color: "var(--text-dim)",
   },
 
   list: {

@@ -1,12 +1,11 @@
 import type { CSSProperties } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Megaphone, BarChart3, CreditCard, Database, Gift, LayoutDashboard, LogOut, Receipt, Smartphone, Users } from "lucide-react";
+import { Megaphone, BarChart3, CreditCard, Database, Gift, LayoutDashboard, LogOut, Smartphone, Users } from "lucide-react";
 import { useAuth } from "./api";
 
 const nav = [
   { to: "/", label: "Обзор", icon: LayoutDashboard },
   { to: "/users", label: "Пользователи", icon: Users },
-  { to: "/orders", label: "Заказы", icon: Receipt },
   { to: "/esims", label: "eSIM", icon: Smartphone },
   { to: "/payments", label: "Платежи", icon: CreditCard },
   { to: "/promos", label: "Промокоды", icon: Gift },

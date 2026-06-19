@@ -231,8 +231,11 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) ->
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     apply_security_headers(handler)
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -487,10 +490,11 @@ def cryptobot_webhook_url() -> str | None:
     override = os.getenv("CRYPTOBOT_WEBHOOK_URL", "").strip()
     if override:
         return override
-    domain = os.getenv("PLATEGA_WEBHOOK_DOMAIN", "").strip()
-    if not domain:
-        return None
-    return f"https://{domain.rstrip('/')}/api/webhooks/cryptobot"
+    for key in ("PLATEGA_WEBHOOK_DOMAIN", "API_DOMAIN"):
+        domain = os.getenv(key, "").strip()
+        if domain:
+            return f"https://{domain.rstrip('/')}/api/webhooks/cryptobot"
+    return None
 
 
 def sync_cryptobot_payment_intent(intent: Any) -> Any:

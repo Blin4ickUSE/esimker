@@ -46,7 +46,7 @@ from core.security import (
 
 from core.esim_profile import build_android_install_url, build_apple_install_url, build_lpa_string
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 REFERRAL_COMMISSION_RATE = 0.10
 REFERRAL_FRIEND_DISCOUNT_RATE = 0.10
 
@@ -61,6 +61,7 @@ PaymentIntentKind = Literal["topup", "purchase"]
 PaymentIntentStatus = Literal["pending", "completed", "expired", "cancelled"]
 
 PAYMENT_INTENT_TTL_MINUTES = 30
+MIN_EXTERNAL_TOPUP_USD = 1.0
 PaymentMethod = Literal["balance", "card", "sbp", "crypto", "other"]
 OrderStatus = Literal["pending", "paid", "failed", "refunded"]
 BalanceKind = Literal["topup", "purchase", "promo", "referral", "refund", "adjustment"]
@@ -280,6 +281,8 @@ class PaymentIntent:
     esim_id: str | None = None
     provider_ref: str | None = None
     completed_at: str | None = None
+    plan_price_usd: float | None = None
+    balance_applied_usd: float = 0.0
 
     def to_client_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -291,13 +294,17 @@ class PaymentIntent:
             "createdAt": iso_to_ms(self.created_at),
         }
         if self.kind == "purchase" and self.plan_name:
+            plan_price = self.plan_price_usd if self.plan_price_usd is not None else self.amount_usd
             data["plan"] = {
                 "name": self.plan_name,
                 "countryCode": self.country_code,
                 "gb": volume_from_db(self.gb or ""),
                 "days": self.days,
-                "usd": self.amount_usd,
+                "usd": plan_price,
             }
+            if self.balance_applied_usd > 0:
+                data["balanceAppliedUsd"] = self.balance_applied_usd
+                data["chargeUsd"] = self.amount_usd
         return data
 
 
@@ -565,10 +572,12 @@ CREATE TABLE IF NOT EXISTS payment_intents (
     payment_provider TEXT,
     order_id         TEXT,
     esim_id          TEXT,
-    provider_ref     TEXT,
-    expires_at       TEXT NOT NULL,
-    created_at       TEXT NOT NULL,
-    completed_at     TEXT
+    provider_ref          TEXT,
+    plan_price_usd        REAL,
+    balance_applied_usd   REAL NOT NULL DEFAULT 0,
+    expires_at            TEXT NOT NULL,
+    created_at            TEXT NOT NULL,
+    completed_at          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
@@ -635,6 +644,23 @@ def _row_to_user(row: sqlite3.Row) -> User:
     )
 
 
+def purchase_payment_split(
+    plan_price_usd: float,
+    balance_usd: float,
+    *,
+    min_external: float = MIN_EXTERNAL_TOPUP_USD,
+) -> tuple[float, float, float]:
+    """Return (external_charge, balance_applied, plan_price) for a card/crypto checkout."""
+    plan_price = validate_money(plan_price_usd, field="amount")
+    balance = max(0.0, float(balance_usd))
+    if balance <= 0 or balance >= plan_price:
+        return plan_price, 0.0, plan_price
+    balance_applied = round(balance, 2)
+    shortfall = round(plan_price - balance_applied, 2)
+    external = max(min_external, shortfall)
+    return round(external, 2), balance_applied, plan_price
+
+
 def _row_to_esim(row: sqlite3.Row) -> Esim:
     return Esim(
         id=row["id"],
@@ -689,6 +715,16 @@ def _row_to_payment_intent(row: sqlite3.Row) -> PaymentIntent:
         order_id=row["order_id"],
         esim_id=row["esim_id"],
         provider_ref=row["provider_ref"] if "provider_ref" in row.keys() else None,
+        plan_price_usd=(
+            float(row["plan_price_usd"])
+            if "plan_price_usd" in row.keys() and row["plan_price_usd"] is not None
+            else None
+        ),
+        balance_applied_usd=(
+            float(row["balance_applied_usd"])
+            if "balance_applied_usd" in row.keys() and row["balance_applied_usd"] is not None
+            else 0.0
+        ),
         expires_at=row["expires_at"],
         created_at=row["created_at"],
         completed_at=row["completed_at"],
@@ -944,6 +980,15 @@ class Database:
                     )
                 if current < 7:
                     _migrate_v7(conn)
+                if current < 8:
+                    pi_cols = {r["name"] for r in conn.execute("PRAGMA table_info(payment_intents)")}
+                    if "plan_price_usd" not in pi_cols:
+                        conn.execute("ALTER TABLE payment_intents ADD COLUMN plan_price_usd REAL")
+                    if "balance_applied_usd" not in pi_cols:
+                        conn.execute(
+                            "ALTER TABLE payment_intents ADD COLUMN balance_applied_usd "
+                            "REAL NOT NULL DEFAULT 0"
+                        )
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, isoformat()),
@@ -2180,24 +2225,34 @@ class Database:
         amount_usd = validate_money(amount_usd, field="amount")
         with self.transaction() as conn:
             discount = self.referral_friend_discount_rate(user_id, conn=conn)
+            plan_price = amount_usd
             if discount > 0:
-                amount_usd = round(amount_usd * (1.0 - discount), 2)
+                plan_price = round(amount_usd * (1.0 - discount), 2)
+            balance_row = conn.execute(
+                "SELECT balance FROM users WHERE telegram_id = ?",
+                (user_id,),
+            ).fetchone()
+            balance = float(balance_row["balance"]) if balance_row else 0.0
+            charge, balance_applied, plan_price = purchase_payment_split(plan_price, balance)
             conn.execute(
                 """
                 INSERT INTO payment_intents (
                     id, user_id, kind, amount_usd, status,
                     plan_name, country_code, gb, days,
+                    plan_price_usd, balance_applied_usd,
                     expires_at, created_at
-                ) VALUES (?, ?, 'purchase', ?, 'pending', ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 'purchase', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     intent_id,
                     user_id,
-                    amount_usd,
+                    charge,
                     plan_name,
                     country_code,
                     gb,
                     days,
+                    plan_price,
+                    balance_applied,
                     expires,
                     now,
                 ),
@@ -2331,6 +2386,31 @@ class Database:
                 purchase_esim_id = esim_id or secrets.token_hex(8)
                 order_id = purchase_order_id
                 esim_id = purchase_esim_id
+                plan_price = (
+                    intent.plan_price_usd
+                    if intent.plan_price_usd is not None
+                    else intent.amount_usd
+                )
+                balance_applied = intent.balance_applied_usd or 0.0
+                if balance_applied > 0:
+                    self.adjust_balance(
+                        user_id,
+                        -balance_applied,
+                        kind="purchase",
+                        reference_id=intent_id,
+                        conn=conn,
+                    )
+                shortfall = round(plan_price - balance_applied, 2)
+                overpay = round(intent.amount_usd - shortfall, 2)
+                if overpay >= 0.01:
+                    self.adjust_balance(
+                        user_id,
+                        overpay,
+                        kind="adjustment",
+                        reference_id=intent_id,
+                        note="payment surplus",
+                        conn=conn,
+                    )
                 self.purchase_external(
                     user_id=user_id,
                     order_id=purchase_order_id,
@@ -2339,7 +2419,7 @@ class Database:
                     country_code=intent.country_code,
                     gb=intent.gb or "",
                     days=intent.days,
-                    amount_usd=intent.amount_usd,
+                    amount_usd=plan_price,
                     payment_method=payment_method,
                     payment_provider=payment_provider,
                     payment_ref=payment_ref or intent_id,

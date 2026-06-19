@@ -1,4 +1,4 @@
-"""Platega.io payment gateway (SBP, Russian cards, international cards)."""
+"""Platega.io payment gateway (SBP, Russian cards)."""
 
 from __future__ import annotations
 
@@ -16,12 +16,10 @@ BASE_URL = "https://app.platega.io/transaction/process"
 # https://docs.platega.io — paymentMethod integers
 METHOD_SBP = 2
 METHOD_CARD_RU = 10
-METHOD_CARD_INTL = 12
 
 PROVIDER_TO_METHOD: dict[str, int] = {
     "sbp": METHOD_SBP,
     "card_ru": METHOD_CARD_RU,
-    "card_intl": METHOD_CARD_INTL,
 }
 
 PLATEGA_PROVIDERS = frozenset(PROVIDER_TO_METHOD)

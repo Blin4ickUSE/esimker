@@ -277,6 +277,7 @@ export default function Detail({ country }: { country: string }) {
           country={country}
           planLabel={planLabel(plan)}
           price={plan.usd}
+          balanceUsd={balanceUsd}
           fromBalance={balanceUsd >= plan.usd}
           paying={paying}
           t={t}
@@ -319,6 +320,7 @@ function ConfirmPurchaseModal({
   country,
   planLabel,
   price,
+  balanceUsd,
   fromBalance,
   paying,
   t,
@@ -328,12 +330,16 @@ function ConfirmPurchaseModal({
   country: string;
   planLabel: string;
   price: number;
+  balanceUsd: number;
   fromBalance: boolean;
   paying: boolean;
   t: (k: StringKey) => string;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const partial = !fromBalance && balanceUsd > 0 && balanceUsd < price;
+  const charge = partial ? Math.max(1, Math.round((price - balanceUsd) * 100) / 100) : price;
+
   return (
     <div style={s.modalBackdrop} onClick={onCancel}>
       <div style={s.confirmModal} onClick={(e) => e.stopPropagation()}>
@@ -349,10 +355,20 @@ function ConfirmPurchaseModal({
           </div>
           <div style={s.confirmRow}>
             <span style={s.confirmLabel}>{t("payAmount")}</span>
-            <span style={s.confirmPrice}>{formatUsd(price)}</span>
+            <span style={s.confirmPrice}>{formatUsd(partial ? charge : price)}</span>
           </div>
+          {partial && (
+            <div style={s.confirmRow}>
+              <span style={s.confirmLabel}>{t("payPlanTotal")}</span>
+              <span style={s.confirmValue}>{formatUsd(price)}</span>
+            </div>
+          )}
           <div style={s.confirmHint}>
-            {fromBalance ? t("payConfirmFromBalance") : t("payConfirmToPayment")}
+            {fromBalance
+              ? t("payConfirmFromBalance")
+              : partial
+                ? `${t("payConfirmPartialBalance")} ${formatUsd(balanceUsd)}`
+                : t("payConfirmToPayment")}
           </div>
         </div>
         <div style={s.confirmActions}>

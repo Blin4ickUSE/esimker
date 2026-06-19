@@ -147,6 +147,8 @@ payAwaitingTitle = Ожидание оплаты
 payAwaitingBody  = Завершите оплату в открывшемся окне. Статус обновится автоматически.
 payAwaitingHint  = Не закрывайте приложение до подтверждения оплаты
 payOpenAgain     = Открыть оплату снова
+payPlanTotal     = Стоимость тарифа
+payConfirmPartialBalance = С баланса спишется
 
 # Auth
 authTitle       = Войти

@@ -62,6 +62,13 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  deletePromo: (code: string) =>
+    request<{ ok: boolean }>(`/promos/${encodeURIComponent(code)}`, { method: "DELETE" }),
+  resolveUsernames: (telegramIds: number[]) =>
+    request<{ usernames: Record<string, string> }>("/users/usernames", {
+      method: "POST",
+      body: JSON.stringify({ telegramIds }),
+    }),
   referrals: () => request<ReferralStats>("/referrals"),
   broadcasts: () => request<{ items: Record<string, unknown>[] }>("/broadcasts"),
   sendBroadcast: (body: Record<string, unknown>) =>

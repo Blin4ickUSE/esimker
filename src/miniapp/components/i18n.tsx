@@ -164,6 +164,8 @@ export type StringKey =
   | "payAwaitingBody"
   | "payAwaitingHint"
   | "payOpenAgain"
+  | "payPlanTotal"
+  | "payConfirmPartialBalance"
   | "authTitle"
   | "authSub"
   | "authOpenBot"

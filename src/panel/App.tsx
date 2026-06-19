@@ -13,7 +13,6 @@ const Login = lazy(() => import("./pages/Login"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Users = lazy(() => import("./pages/Users"));
 const UserDetail = lazy(() => import("./pages/UserDetail"));
-const Orders = lazy(() => import("./pages/Orders"));
 const Esims = lazy(() => import("./pages/Esims"));
 const Payments = lazy(() => import("./pages/Payments"));
 const Promos = lazy(() => import("./pages/Promos"));
@@ -47,7 +46,6 @@ function App() {
               <Route index element={<Dashboard />} />
               <Route path="users" element={<Users />} />
               <Route path="users/:id" element={<UserDetail />} />
-              <Route path="orders" element={<Orders />} />
               <Route path="esims" element={<Esims />} />
               <Route path="payments" element={<Payments />} />
               <Route path="promos" element={<Promos />} />

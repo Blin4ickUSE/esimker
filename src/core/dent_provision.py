@@ -241,11 +241,11 @@ async def _activate(
     if user_ip:
         body_base["userIp"] = user_ip
 
-    customer_uid: str | None = None
+    customer_uid: str | None = user.dent_customer_uid
     if existing_esim and existing_esim.iccid:
-        customer_uid = existing_esim.dent_customer_uid or user.dent_customer_uid
+        customer_uid = existing_esim.dent_customer_uid or customer_uid
 
-    if existing_esim and existing_esim.iccid and customer_uid:
+    if customer_uid:
         return await client.top_up(
             {
                 **body_base,

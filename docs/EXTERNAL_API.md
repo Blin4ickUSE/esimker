@@ -1,6 +1,6 @@
 # External Reseller API
 
-Base URL: `https://<your-domain>/api/v1`
+Base URL: `https://<API_DOMAIN>/api/v1` (separate domain with SSL, configured in `install.sh`)
 
 All requests must use **HTTPS**. Authentication uses HMAC-SHA256 with a per-user API secret.
 

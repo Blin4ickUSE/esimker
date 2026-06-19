@@ -1,15 +1,50 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type UserRow } from "../components/api";
 import { Btn, ErrorBox, Input, Page, TableWrap, Td, Th } from "../components/ui";
 
+const USERNAME_CACHE_KEY = "esimker.panel.usernames";
+
+function readUsernameCache(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(USERNAME_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeUsernameCache(cache: Record<string, string>) {
+  localStorage.setItem(USERNAME_CACHE_KEY, JSON.stringify(cache));
+}
+
 export default function Users() {
   const [search, setSearch] = useState("");
   const [items, setItems] = useState<UserRow[]>([]);
+  const [usernames, setUsernames] = useState<Record<string, string>>(() => readUsernameCache());
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [error, setError] = useState("");
   const limit = 50;
+
+  const resolveUsernames = useCallback(async (rows: UserRow[]) => {
+    const cache = readUsernameCache();
+    const missing = rows
+      .map((u) => u.telegram_id)
+      .filter((id) => !cache[String(id)]);
+    if (missing.length === 0) return;
+    try {
+      const res = await api.resolveUsernames(missing);
+      const next = { ...readUsernameCache() };
+      for (const [id, name] of Object.entries(res.usernames)) {
+        next[String(id)] = name;
+      }
+      writeUsernameCache(next);
+      setUsernames(next);
+    } catch {
+      /* usernames are optional */
+    }
+  }, []);
 
   const load = (off = offset) => {
     const p = new URLSearchParams({ offset: String(off), limit: String(limit) });
@@ -19,6 +54,7 @@ export default function Users() {
         setItems(r.items);
         setTotal(r.total);
         setOffset(r.offset);
+        void resolveUsernames(r.items);
       })
       .catch((e) => setError(e.message));
   };
@@ -26,6 +62,11 @@ export default function Users() {
   useEffect(() => {
     load(0);
   }, []);
+
+  const label = (id: number) => {
+    const username = usernames[String(id)];
+    return username ? `@${username}` : String(id);
+  };
 
   return (
     <Page
@@ -42,6 +83,7 @@ export default function Users() {
       <TableWrap>
         <thead>
           <tr>
+            <Th>Пользователь</Th>
             <Th>Telegram ID</Th>
             <Th>Баланс</Th>
             <Th>Реф. код</Th>
@@ -52,6 +94,7 @@ export default function Users() {
         <tbody>
           {items.map((u) => (
             <tr key={u.telegram_id}>
+              <Td>{label(u.telegram_id)}</Td>
               <Td>{u.telegram_id}</Td>
               <Td>${Number(u.balance).toFixed(2)}</Td>
               <Td>{u.referral_code}</Td>

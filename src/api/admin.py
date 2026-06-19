@@ -93,6 +93,15 @@ def handle_admin_request(
             )
             return True
 
+        if path == "/api/admin/users/usernames" and method == "POST":
+            payload = body if body is not None else read_json(handler)
+            ids_raw = payload.get("telegramIds") or payload.get("ids") or []
+            if not isinstance(ids_raw, list):
+                ids_raw = []
+            telegram_ids = [int(x) for x in ids_raw if str(x).isdigit()]
+            json_response(handler, 200, {"usernames": admin.resolve_telegram_usernames(telegram_ids)})
+            return True
+
         m = _USER_ID_RE.match(path)
         if m:
             telegram_id = int(m.group(1))
@@ -168,6 +177,11 @@ def handle_admin_request(
         if pm and method == "PATCH":
             payload = body if body is not None else read_json(handler)
             json_response(handler, 200, admin.patch_promo(pm.group(1), payload))
+            return True
+
+        if pm and method == "DELETE":
+            admin.delete_promo(pm.group(1))
+            json_response(handler, 200, {"ok": True})
             return True
 
         if path == "/api/admin/referrals" and method == "GET":

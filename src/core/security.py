@@ -17,7 +17,6 @@ PAYMENT_METHODS = frozenset({
     "balance",
     "card",
     "card_ru",
-    "card_intl",
     "crypto",
     "sbp",
     "cryptobot",
@@ -26,7 +25,6 @@ PAYMENT_METHODS = frozenset({
 PAYMENT_PROVIDERS = frozenset({
     "sbp",
     "card_ru",
-    "card_intl",
     "crypto",
     "cryptobot",
     "ton_usdt",

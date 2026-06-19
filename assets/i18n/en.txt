@@ -147,6 +147,8 @@ payAwaitingTitle = Waiting for payment
 payAwaitingBody  = Complete the payment in the window that opened. This page will update automatically.
 payAwaitingHint  = Do not close the app until payment is confirmed
 payOpenAgain     = Open payment page again
+payPlanTotal     = Plan price
+payConfirmPartialBalance = Deduct from balance
 
 # Auth
 authTitle       = Sign in
