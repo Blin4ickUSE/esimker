@@ -751,6 +751,41 @@ url_with_port() {
     fi
 }
 
+nginx_prune_broken_symlinks() {
+    local link name
+    shopt -s nullglob
+    for link in /etc/nginx/sites-enabled/*; do
+        [[ -L "$link" ]] || continue
+        if [[ ! -e "$link" ]]; then
+            name="$(basename "$link")"
+            sudo rm -f "$link"
+            log_warn "  Удалена битая ссылка nginx: ${name}"
+        fi
+    done
+    shopt -u nullglob
+}
+
+nginx_test_and_reload() {
+    nginx_prune_broken_symlinks
+    sudo nginx -t
+    sudo systemctl reload nginx
+}
+
+ensure_main_nginx_config() {
+    if [[ -f "$NGINX_CONF" ]]; then
+        return 0
+    fi
+    local domain http_port ssl_port
+    domain="$(env_get DOMAIN 2>/dev/null || true)"
+    [[ -n "$domain" ]] || return 0
+    http_port="$(env_get HTTP_PORT 2>/dev/null || true)"
+    http_port="${http_port:-$DEFAULT_HTTP_PORT}"
+    ssl_port="$(nginx_read_ssl_port 2>/dev/null || true)"
+    ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
+    log_warn "  Восстанавливаем основной nginx-конфиг для ${domain}"
+    write_nginx_config "$domain" "$ssl_port" "$http_port"
+}
+
 write_nginx_config() {
     local domain="$1"
     local ssl_port="$2"
@@ -787,8 +822,9 @@ server {
 }
 
 server {
-    listen ${ssl_port} ssl http2;
-    listen [::]:${ssl_port} ssl http2;
+    listen ${ssl_port} ssl;
+    listen [::]:${ssl_port} ssl;
+    http2 on;
     server_name ${domain};
 
     ssl_certificate /etc/letsencrypt/live/${domain}/fullchain.pem;
@@ -815,8 +851,7 @@ EOF
 
     sudo rm -f /etc/nginx/sites-enabled/default
     sudo ln -sf "$NGINX_CONF" "$NGINX_LINK"
-    sudo nginx -t
-    sudo systemctl reload nginx
+    nginx_test_and_reload
     log_success "  ✔ Nginx настроен"
 }
 
@@ -851,8 +886,9 @@ server {
 }
 
 server {
-    listen ${ssl_port} ssl http2;
-    listen [::]:${ssl_port} ssl http2;
+    listen ${ssl_port} ssl;
+    listen [::]:${ssl_port} ssl;
+    http2 on;
     server_name ${webhook_domain};
 
     ssl_certificate /etc/letsencrypt/live/${webhook_domain}/fullchain.pem;
@@ -894,8 +930,7 @@ server {
 EOF
 
     sudo ln -sf "$NGINX_WEBHOOK_CONF" "$NGINX_WEBHOOK_LINK"
-    sudo nginx -t
-    sudo systemctl reload nginx
+    nginx_test_and_reload
     log_success "  ✔ Nginx webhook настроен"
 }
 
@@ -935,8 +970,9 @@ server {
 }
 
 server {
-    listen ${ssl_port} ssl http2;
-    listen [::]:${ssl_port} ssl http2;
+    listen ${ssl_port} ssl;
+    listen [::]:${ssl_port} ssl;
+    http2 on;
     server_name ${panel_domain};
 
     ssl_certificate /etc/letsencrypt/live/${panel_domain}/fullchain.pem;
@@ -962,8 +998,7 @@ server {
 EOF
 
     sudo ln -sf "$NGINX_PANEL_CONF" "$NGINX_PANEL_LINK"
-    sudo nginx -t
-    sudo systemctl reload nginx
+    nginx_test_and_reload
     log_success "  ✔ Nginx панели настроен"
 }
 
@@ -1003,8 +1038,9 @@ server {
 }
 
 server {
-    listen ${ssl_port} ssl http2;
-    listen [::]:${ssl_port} ssl http2;
+    listen ${ssl_port} ssl;
+    listen [::]:${ssl_port} ssl;
+    http2 on;
     server_name ${api_domain};
 
     ssl_certificate /etc/letsencrypt/live/${api_domain}/fullchain.pem;
@@ -1030,8 +1066,7 @@ server {
 EOF
 
     sudo ln -sf "$NGINX_API_CONF" "$NGINX_API_LINK"
-    sudo nginx -t
-    sudo systemctl reload nginx
+    nginx_test_and_reload
     log_success "  ✔ Nginx API настроен"
 }
 
@@ -1128,7 +1163,7 @@ EOF
 
     sudo rm -f "$NGINX_LINK"
     sudo ln -sf "$temp_conf" "$NGINX_LINK"
-    sudo nginx -t && sudo systemctl reload nginx
+    nginx_test_and_reload
 
     sudo certbot certonly --webroot \
         -w "$CERTBOT_WEBROOT" \
@@ -1140,7 +1175,7 @@ EOF
     sudo rm -f "$temp_conf"
     if [[ -n "$restore_link" && -f "$restore_link" ]]; then
         sudo ln -sf "$restore_link" "$NGINX_LINK"
-        sudo nginx -t && sudo systemctl reload nginx
+        nginx_test_and_reload
     fi
 
     log_success "  ✔ Сертификат получен"
@@ -1271,13 +1306,14 @@ run_update() {
     ssl_port="$(nginx_read_ssl_port 2>/dev/null || true)"
     ssl_port="${ssl_port:-$DEFAULT_SSL_PORT}"
 
+    ensure_main_nginx_config
     ensure_webhook_infrastructure
     ensure_api_infrastructure
     ensure_panel_infrastructure
     start_containers
 
-    if [[ -f "$NGINX_CONF" ]]; then
-        sudo nginx -t && sudo systemctl reload nginx
+    if [[ -f "$NGINX_CONF" || -f "$NGINX_WEBHOOK_CONF" || -f "$NGINX_API_CONF" || -L "$NGINX_LINK" ]]; then
+        nginx_test_and_reload
     fi
 
     if [[ -z "$domain" && -f ".env" ]]; then
@@ -1405,7 +1441,7 @@ prepare_project_root
 reexec_from_repo_if_needed
 require_project_root
 
-if [[ -f "$NGINX_CONF" ]]; then
+if [[ -f "$NGINX_CONF" || -f "$NGINX_WEBHOOK_CONF" || -f "$NGINX_API_CONF" || -L "$NGINX_LINK" ]]; then
     run_update
 else
     run_install
