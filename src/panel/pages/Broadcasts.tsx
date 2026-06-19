@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../components/api";
-import { Btn, Card, ErrorBox, Input, Page } from "../components/ui";
+import { Btn, Card, ErrorBox, Page } from "../components/ui";
 
 type Kind = "news" | "marketing";
 
