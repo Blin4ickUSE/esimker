@@ -19,6 +19,7 @@ import {
   type StringKey,
 } from "../components/i18n";
 import { blockedInRu, codeOf, displayName, plansFor, type Plan, type Volume } from "@assets/catalog";
+import { CountryNotices } from "../components/CountryNotices";
 import { gbLabel } from "@assets/volume";
 
 type PlanKind = "regular" | "unlimited";
@@ -227,6 +228,8 @@ export default function Detail({ country }: { country: string }) {
           <InfoRow icon={<Clock size={15} />} text={t("activation180")} />
           <InfoRow icon={<Zap size={15} />} text={t("instant")} />
         </div>
+
+        <CountryNotices country={country} />
 
         {(hasRegular || hasUnlimited) && (
           <PlanKindSwitch

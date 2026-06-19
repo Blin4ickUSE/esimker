@@ -23,6 +23,7 @@ import {
   type EsimStatus,
   type StringKey,
 } from "../components/i18n";
+import { CountryNotices } from "../components/CountryNotices";
 
 const SMDP = "rsp.esimker.com";
 
@@ -109,17 +110,37 @@ export const migrateEsim = (e: LegacyEsim): Esim => {
     dataRemainingGb,
     activatedAt: e.activatedAt,
     expiresAt: e.expiresAt,
+    appleInstallUrl: e.appleInstallUrl,
+    androidInstallUrl: e.androidInstallUrl,
+    lpaString: e.lpaString,
   };
 };
 
-const lpaString = (esim: Pick<Esim, "smdpAddress" | "activationCode">): string =>
-  `LPA:1$${esim.smdpAddress}$${esim.activationCode}`;
+const lpaString = (esim: Pick<Esim, "smdpAddress" | "activationCode" | "lpaString">): string => {
+  if (esim.lpaString?.trim()) return esim.lpaString.trim();
+  const code = esim.activationCode.trim();
+  if (code.startsWith("LPA:")) return code;
+  return `LPA:1$${esim.smdpAddress}$${code}`;
+};
 
-const iosInstallUrl = (esim: Pick<Esim, "smdpAddress" | "activationCode">): string =>
+const iosInstallUrl = (esim: Pick<Esim, "smdpAddress" | "activationCode" | "lpaString" | "appleInstallUrl">): string =>
+  esim.appleInstallUrl?.trim() ||
   `https://esimsetup.apple.com/esim_qrcode_provisioning?carddata=${encodeURIComponent(lpaString(esim))}`;
 
-const androidInstallUrl = (esim: Pick<Esim, "smdpAddress" | "activationCode">): string =>
-  `intent://euicc/#Intent;scheme=lpa;S.lpa=${encodeURIComponent(lpaString(esim))};end`;
+const androidInstallUrl = (
+  esim: Pick<Esim, "smdpAddress" | "activationCode" | "lpaString" | "androidInstallUrl">,
+): string =>
+  esim.androidInstallUrl?.trim() ||
+  `https://esimsetup.android.com/esim_qrcode_provisioning?carddata=${encodeURIComponent(lpaString(esim))}`;
+
+const openInstallLink = (url: string) => {
+  const tg = window.Telegram?.WebApp;
+  if (tg?.openLink) {
+    tg.openLink(url, { try_instant_view: false });
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer") ?? (window.location.href = url);
+};
 
 const formatPurchaseDate = (ts: number, lang: Lang): string =>
   new Intl.DateTimeFormat(lang === "ru" ? "ru-RU" : "en-US", {
@@ -256,8 +277,10 @@ export default function EsimDetail() {
   }
 
   const onInstall = (url: string) => {
-    window.location.href = url;
+    openInstallLink(url);
   };
+
+  const canInstall = Boolean(esim.smdpAddress?.trim() && esim.activationCode?.trim());
 
   return (
     <Screen pad="16px 16px 32px">
@@ -277,6 +300,33 @@ export default function EsimDetail() {
       <div style={sStyles.statusCard}>
         <span style={{ ...sStyles.badge, ...statusStyle(esim.status) }}>{t(statusKey(esim.status))}</span>
       </div>
+
+      <CountryNotices country={esim.name} />
+
+      {canInstall && (
+        <>
+          <SectionLabel>{t("esimQuickInstall")}</SectionLabel>
+          <div style={sStyles.installCol}>
+            <button
+              type="button"
+              style={sStyles.installBtnPrimary}
+              onClick={() => onInstall(iosInstallUrl(esim))}
+            >
+              <Smartphone size={18} />
+              {t("esimInstallIphone")}
+            </button>
+            <button
+              type="button"
+              style={sStyles.installBtnPrimary}
+              onClick={() => onInstall(androidInstallUrl(esim))}
+            >
+              <Smartphone size={18} />
+              {t("esimInstallAndroid")}
+            </button>
+          </div>
+          <div style={sStyles.installHint}>{t("esimInstallHint")}</div>
+        </>
+      )}
 
       <div style={sStyles.grid}>
         <InfoCell label={t("esimIccid")} value={esim.iccid} />
@@ -304,17 +354,6 @@ export default function EsimDetail() {
         <CopyRow label={t("esimActivationCode")} value={esim.activationCode} />
         <div style={sStyles.divider} />
         <CopyRow label={t("esimIccid")} value={esim.iccid} />
-      </div>
-
-      <div style={sStyles.installRow}>
-        <button type="button" style={sStyles.installBtn} onClick={() => onInstall(iosInstallUrl(esim))}>
-          <Smartphone size={18} />
-          {t("esimInstallIphone")}
-        </button>
-        <button type="button" style={sStyles.installBtn} onClick={() => onInstall(androidInstallUrl(esim))}>
-          <Smartphone size={18} />
-          {t("esimInstallAndroid")}
-        </button>
       </div>
 
       <SectionLabel>
@@ -449,22 +488,29 @@ const sStyles: Record<string, CSSProperties> = {
     cursor: "pointer",
   },
 
-  installRow: { display: "flex", gap: 9, marginBottom: 22 },
-  installBtn: {
-    flex: 1,
+  installCol: { display: "flex", flexDirection: "column", gap: 9, marginBottom: 10 },
+  installBtnPrimary: {
+    width: "100%",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
     border: "none",
     borderRadius: "var(--r-lg)",
-    padding: "13px 12px",
+    padding: "15px 14px",
     cursor: "pointer",
     background: "linear-gradient(135deg,var(--accent),var(--accent-2))",
     color: "var(--accent-ink)",
-    fontSize: "var(--fs-sm)",
+    fontSize: "var(--fs-md)",
     fontWeight: 700,
     lineHeight: 1.25,
+  },
+  installHint: {
+    fontSize: "var(--fs-sm)",
+    color: "var(--text-dim)",
+    lineHeight: 1.4,
+    marginBottom: 22,
+    textAlign: "center",
   },
 
   noteRow: {

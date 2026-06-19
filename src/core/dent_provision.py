@@ -168,6 +168,7 @@ def map_dent_response_to_esim_fields(
                 else existing_esim.activation_code
             ),
             "appleUniversalLink": existing_esim.apple_universal_link,
+            "androidUniversalLink": existing_esim.android_universal_link,
             "installationUrl": existing_esim.installation_url,
             "uid": existing_esim.dent_esim_uid,
             "state": existing_esim.dent_esim_state,
@@ -189,6 +190,7 @@ def map_dent_response_to_esim_fields(
         "smdp_address": smdp or None,
         "activation_code": activation_part or None,
         "apple_universal_link": profile.get("appleUniversalLink"),
+        "android_universal_link": profile.get("androidUniversalLink"),
         "installation_url": profile.get("installationUrl"),
         "data_remaining_gb": data_remaining,
         "data_total_gb": data_total,

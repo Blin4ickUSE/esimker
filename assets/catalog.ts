@@ -143,6 +143,17 @@ const BLOCKED_IN_RU = new Set(["Ukraine"]);
 
 export const blockedInRu = (name: string): boolean => BLOCKED_IN_RU.has(name);
 
+/** Country-specific warnings shown on purchase and eSIM detail pages. */
+export const COUNTRY_NOTICE_KEYS = {
+  Russia: ["noticeRuSms", "noticeRuWhitelist"],
+  China: ["noticeCnHkMo"],
+} as const satisfies Record<string, readonly string[]>;
+
+export type CountryNoticeKey = (typeof COUNTRY_NOTICE_KEYS)[keyof typeof COUNTRY_NOTICE_KEYS][number];
+
+export const countryNoticeKeys = (name: string): readonly CountryNoticeKey[] =>
+  (COUNTRY_NOTICE_KEYS as Record<string, readonly CountryNoticeKey[]>)[name] ?? [];
+
 
 
 export const countries: string[] = [...byCountry.keys()].filter(isCountryProduct);

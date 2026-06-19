@@ -79,6 +79,8 @@ esimExpiresIn   = Valid for
 esimAfterInstall = After installation
 esimHours       = h
 esimInstallQr   = QR code for setup
+esimQuickInstall = Quick install
+esimInstallHint = Opens the system eSIM installer. Wi‑Fi required.
 esimManualInstall = Manual setup
 esimSmdp        = SM-DP+ Address
 esimActivationCode = Activation Code
@@ -95,6 +97,9 @@ esimNoteTrafficDelay = Remaining data updates every 30 minutes
 esimNoteNoTransfer = eSIM cannot be transferred to another device
 geoBlockedTitle = Access restricted
 geoBlockedBody  = Information for this destination is unavailable.
+noticeRuSms     = ⚠️ After your first connection to a mobile network in the Russian Federation, you will receive an SMS confirming removal of the 24-hour activation lock.
+noticeRuWhitelist = Important! We cannot guarantee eSIM service if mobile internet access is restricted in your region or whitelist filtering is enabled.
+noticeCnHkMo    = ⚠️ This plan does not include Hong Kong or Macau. Separate plans are available for those destinations.
 
 # Settings
 settings              = Settings

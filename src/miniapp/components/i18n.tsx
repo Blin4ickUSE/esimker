@@ -93,6 +93,9 @@ export type StringKey =
   | "expired"
   | "geoBlockedTitle"
   | "geoBlockedBody"
+  | "noticeRuSms"
+  | "noticeRuWhitelist"
+  | "noticeCnHkMo"
   | "settings"
   | "settingsEmail"
   | "settingsEmailNone"
@@ -123,6 +126,8 @@ export type StringKey =
   | "esimAfterInstall"
   | "esimHours"
   | "esimInstallQr"
+  | "esimQuickInstall"
+  | "esimInstallHint"
   | "esimManualInstall"
   | "esimSmdp"
   | "esimActivationCode"
@@ -242,6 +247,9 @@ export interface Esim {
   dataRemainingGb: number | null;
   activatedAt?: number;
   expiresAt?: number;
+  appleInstallUrl?: string;
+  androidInstallUrl?: string;
+  lpaString?: string;
 }
 
 export interface Order {
@@ -582,6 +590,7 @@ declare global {
         };
         ready?: () => void;
         expand?: () => void;
+        openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
       };
     };
   }

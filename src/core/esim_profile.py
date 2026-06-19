@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 SMDP = "rsp.esimker.com"
 
@@ -47,3 +48,51 @@ def build_esim_fields(esim_id: str, gb: Any) -> dict[str, Any]:
         "data_remaining_gb": volume_gb_value(gb),
         "data_total_gb": volume_gb_value(gb),
     }
+
+
+def build_lpa_string(smdp_address: str | None, activation_code: str | None) -> str | None:
+    if not activation_code:
+        return None
+    code = activation_code.strip()
+    if code.startswith("LPA:"):
+        return code
+    if smdp_address:
+        return f"LPA:1${smdp_address.strip()}${code}"
+    return code or None
+
+
+def build_apple_install_url(
+    smdp_address: str | None,
+    activation_code: str | None,
+    *,
+    apple_universal_link: str | None = None,
+) -> str | None:
+    if apple_universal_link and apple_universal_link.strip():
+        return apple_universal_link.strip()
+    lpa = build_lpa_string(smdp_address, activation_code)
+    if not lpa:
+        return None
+    return (
+        "https://esimsetup.apple.com/esim_qrcode_provisioning"
+        f"?carddata={quote(lpa, safe='')}"
+    )
+
+
+def build_android_install_url(
+    smdp_address: str | None,
+    activation_code: str | None,
+    *,
+    android_universal_link: str | None = None,
+    installation_url: str | None = None,
+) -> str | None:
+    if android_universal_link and android_universal_link.strip():
+        return android_universal_link.strip()
+    lpa = build_lpa_string(smdp_address, activation_code)
+    if lpa:
+        return (
+            "https://esimsetup.android.com/esim_qrcode_provisioning"
+            f"?carddata={quote(lpa, safe='')}"
+        )
+    if installation_url and installation_url.strip():
+        return installation_url.strip()
+    return None

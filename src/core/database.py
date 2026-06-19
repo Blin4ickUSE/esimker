@@ -42,6 +42,8 @@ from core.security import (
     validate_telegram_id,
 )
 
+from core.esim_profile import build_android_install_url, build_apple_install_url, build_lpa_string
+
 SCHEMA_VERSION = 6
 REFERRAL_COMMISSION_RATE = 0.10
 REFERRAL_FRIEND_DISCOUNT_RATE = 0.10
@@ -218,7 +220,18 @@ class Esim:
 
     def to_client_dict(self) -> dict[str, Any]:
         """Shape compatible with the miniapp ``Esim`` interface."""
-        return {
+        apple_url = build_apple_install_url(
+            self.smdp_address,
+            self.activation_code,
+            apple_universal_link=self.apple_universal_link,
+        )
+        android_url = build_android_install_url(
+            self.smdp_address,
+            self.activation_code,
+            android_universal_link=self.android_universal_link,
+            installation_url=self.installation_url,
+        )
+        data: dict[str, Any] = {
             "id": self.id,
             "name": self.name,
             "code": self.country_code,
@@ -234,6 +247,14 @@ class Esim:
             **({"activatedAt": iso_to_ms(self.activated_at)} if self.activated_at else {}),
             **({"expiresAt": iso_to_ms(self.expires_at)} if self.expires_at else {}),
         }
+        if apple_url:
+            data["appleInstallUrl"] = apple_url
+        if android_url:
+            data["androidInstallUrl"] = android_url
+        lpa = build_lpa_string(self.smdp_address, self.activation_code)
+        if lpa:
+            data["lpaString"] = lpa
+        return data
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
