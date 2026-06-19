@@ -486,6 +486,15 @@ sync_from_github() {
     save_runtime_backup "$dir"
 
     log_success "  ✔ код обновлён ($(git -C "$dir" rev-parse --short HEAD))"
+    prune_removed_panel_pages "$dir"
+}
+
+# Удалённые страницы панели (могут оставаться в старых коммитах на GitHub).
+prune_removed_panel_pages() {
+    local dir="${1:-.}"
+    rm -f \
+        "$dir/src/panel/pages/Popular.tsx" \
+        "$dir/src/panel/pages/Transactions.tsx"
 }
 
 ensure_project_checkout() {
@@ -1021,6 +1030,8 @@ EOF
 
 start_containers() {
     log_info "\nСборка и запуск Docker-контейнеров"
+
+    prune_removed_panel_pages "$(pwd)"
 
     mkdir -p data
     chmod 755 data
