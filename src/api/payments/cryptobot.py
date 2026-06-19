@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import logging
 import os
-import urllib.error
-import urllib.request
 from typing import Any
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
 CRYPTOBOT_PROVIDERS = frozenset({"cryptobot"})
+
+# Cloudflare blocks Python-urllib; use httpx with an explicit client identity.
+_USER_AGENT = "esimker-cryptopay/1.0 (https://github.com/Blin4ickUSE/esimker)"
 
 
 class CryptobotError(Exception):
@@ -33,37 +35,39 @@ def configured() -> bool:
     return bool(_api_token())
 
 
+def _headers() -> dict[str, str]:
+    return {
+        "Crypto-Pay-API-Token": _api_token(),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": _USER_AGENT,
+    }
+
+
 def _request(method: str, api_method: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     token = _api_token()
     if not token:
         raise CryptobotError("cryptobot is not configured")
     url = f"{_api_base()}/{api_method}"
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Crypto-Pay-API-Token": token,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method=method,
-    )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        logger.error("Crypto Pay HTTP %s: %s", exc.code, detail)
-        raise CryptobotError("cryptobot request failed") from exc
-    except urllib.error.URLError as exc:
+        with httpx.Client(timeout=30.0, headers=_headers()) as client:
+            if method.upper() == "GET":
+                resp = client.get(url)
+            else:
+                resp = client.post(url, json=body or {})
+    except httpx.RequestError as exc:
         logger.error("Crypto Pay network error: %s", exc)
         raise CryptobotError("cryptobot unreachable") from exc
 
+    if resp.status_code >= 400:
+        detail = resp.text[:500]
+        logger.error("Crypto Pay HTTP %s: %s", resp.status_code, detail)
+        raise CryptobotError("cryptobot request failed") from None
+
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.error("Crypto Pay invalid JSON: %s", raw[:200])
+        payload = resp.json()
+    except ValueError as exc:
+        logger.error("Crypto Pay invalid JSON: %s", resp.text[:200])
         raise CryptobotError("invalid cryptobot response") from exc
 
     if not isinstance(payload, dict):

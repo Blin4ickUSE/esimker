@@ -249,6 +249,16 @@ export function useI18n(): I18nCtx {
 
 export const formatUsd = (usd: number): string => `$${usd.toFixed(2)}`;
 
+/** Open URL in the system browser (outside Telegram WebView). */
+export function openExternalLink(url: string): void {
+  const tg = window.Telegram?.WebApp;
+  if (tg?.openLink) {
+    tg.openLink(url, { try_instant_view: false });
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer") ?? (window.location.href = url);
+}
+
 /** @deprecated use formatUsd */
 export const formatMoney = (usd: number): string => formatUsd(usd);
 

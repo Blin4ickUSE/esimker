@@ -8,6 +8,7 @@ import cryptobotImg from "@assets/img/cryptobot.png";
 import {
   useI18n,
   formatUsd,
+  openExternalLink,
   paths,
   useAccount,
   type PaymentIntentView,
@@ -139,7 +140,7 @@ export default function Payment() {
           payment_method,
           payment_provider,
         });
-        window.location.href = redirectUrl;
+        openExternalLink(redirectUrl);
         return;
       }
 
